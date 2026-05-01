@@ -22,6 +22,10 @@ ENV APP_HOME /app
 WORKDIR $APP_HOME
 COPY . ./
 
+# Install git, clear the empty submodule placeholder, and force-clone the engine
+RUN apt-get update && apt-get install -y git
+RUN rm -rf WorldsCollide && git clone https://github.com/ff6wc/WorldsCollide.git WorldsCollide
+
 ENV PATH="/opt/venv/bin:$PATH"
 
 # Allow statements and log messages to immediately appear in the logs
