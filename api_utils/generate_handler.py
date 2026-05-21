@@ -105,7 +105,10 @@ class GenerateHandler():
 
       if result:
         return Response (
-          response = json.dumps({}).encode(),
+          response = json.dumps({
+            'errors': ['Seed generation failed. See server logs for details.'],
+            'success': False
+          }).encode(),
           status = 400,
           mimetype='application/json',
         )
@@ -183,6 +186,14 @@ class GenerateHandler():
     executable = cwd + "/wc.py"
 
     args = ['python', executable, '-i', in_filename, '-o', out_filename, '-manifest', manifest_filename] + flags.split()
-    logging.debug(f'running command {args}')
+    logging.info(f'running command {args}')
 
-    return subprocess.Popen(args, cwd = cwd).wait()
+    proc = subprocess.Popen(args, cwd=cwd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    stdout, stderr = proc.communicate()
+
+    if proc.returncode != 0:
+      logging.error(f"WorldsCollide failed with return code {proc.returncode}")
+      logging.error(f"STDOUT: {stdout.decode('utf-8', errors='replace')}")
+      logging.error(f"STDERR: {stderr.decode('utf-8', errors='replace')}")
+
+    return proc.returncode
