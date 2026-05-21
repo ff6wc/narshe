@@ -150,10 +150,14 @@ def callback():
 
     # 3. Construct JWT Session Token for Ultima
     # Set expiration to 7 days in the future
+    admin_ids = [admin_id.strip() for admin_id in os.environ.get('ADMIN_DISCORD_IDS', '').split(',') if admin_id.strip()]
+    is_admin = str(discord_user['id']) in admin_ids
+
     payload = {
         'sub': str(discord_user['id']),
         'username': discord_user.get('username'),
         'avatar': discord_user.get('avatar'),
+        'isAdmin': is_admin,
         'exp': int(time.time()) + (7 * 24 * 60 * 60)
     }
 
