@@ -7,3 +7,4 @@ google-cloud-datastore
 google-cloud-storage
 requests>=2.31.0
 PyJWT>=2.8.0
+google-cloud-firestore>=2.14.0
