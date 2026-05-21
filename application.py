@@ -1,8 +1,12 @@
+import re
+from dotenv import load_dotenv
+
+# read in the env variables first, before importing local blueprints that load env at module-level
+load_dotenv('.env')
+
 from flask import Flask, make_response
 from flask_cors import CORS
-from dotenv import load_dotenv
 import requests
-import re
 import api.metadata
 import api.generate
 import api.log
@@ -13,12 +17,10 @@ import api.sprites
 import api.wc
 import api.auth
 
-# read in the env variables
-load_dotenv('.env')
 application = Flask(__name__)
 CORS(application, origins=[
     "https://ff6worldscollide.com", "https://dev.ff6worldscollide.com",
-    re.compile(r"^https://.*\.pages\.dev$"),
+    re.compile(r"^https://.*ff6worldscollide\.pages\.dev$"),
     "http://localhost:3000"
 ])
 

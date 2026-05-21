@@ -1,6 +1,7 @@
 import os
 import time
 import logging
+import secrets
 import requests
 import jwt
 from flask import Blueprint, request, redirect, jsonify
@@ -40,14 +41,32 @@ def login():
             "details": "Discord client ID or redirect URI is missing."
         }), 500
 
+    # CSRF Protection: Generate a unique, cryptographically strong random state string
+    state = secrets.token_urlsafe(32)
+
     discord_auth_url = (
         f"{DISCORD_API_BASE}/oauth2/authorize"
         f"?client_id={DISCORD_CLIENT_ID}"
         f"&redirect_uri={requests.utils.quote(DISCORD_REDIRECT_URI)}"
         f"&response_type=code"
         f"&scope=identify"
+        f"&state={state}"
     )
-    return redirect(discord_auth_url)
+    
+    response = redirect(discord_auth_url)
+    
+    # Secure Cookie Configuration:
+    # Disable secure=True only during local testing to support non-HTTPS environments
+    is_secure = not DISCORD_REDIRECT_URI.startswith("http://localhost")
+    response.set_cookie(
+        'oauth_state',
+        state,
+        max_age=600,  # 10 minutes
+        httponly=True,
+        secure=is_secure,
+        samesite='Lax'
+    )
+    return response
 
 
 @bp.route('/callback', methods=['GET'])
@@ -59,6 +78,17 @@ def callback():
             "error": "Server configuration error",
             "details": "One or more required environment variables are not configured."
         }), 500
+
+    # CSRF Protection Validation
+    state_cookie = request.cookies.get('oauth_state')
+    state_param = request.args.get('state')
+
+    if not state_cookie or not state_param or state_cookie != state_param:
+        logger.error(f"[AUTH ERROR] CSRF validation failed. Cookie state: {state_cookie}, Param state: {state_param}")
+        return jsonify({
+            "error": "Unauthorized",
+            "details": "CSRF validation failed: State parameter mismatch or missing."
+        }), 403
 
     code = request.args.get('code')
     if not code:
@@ -133,6 +163,11 @@ def callback():
         logger.error(f"[AUTH ERROR] JWT signing failed: {e}")
         return jsonify({"error": "Failed to generate session token"}), 500
 
-    # 4. Redirect the Client back to Ultima Frontend
-    target_url = f"{ULTIMA_FRONTEND_URL}/login-success?token={session_token}"
-    return redirect(target_url)
+    # 4. Redirect the Client back to Ultima Frontend using a URL fragment (#token=)
+    # This prevents the JWT from leaking in server logs or Referer headers.
+    target_url = f"{ULTIMA_FRONTEND_URL}/login-success#token={session_token}"
+    response = redirect(target_url)
+    
+    # Clean up the state cookie after a successful login flow completes
+    response.delete_cookie('oauth_state')
+    return response
