@@ -59,6 +59,7 @@ def authenticate_request():
 
 
 @bp.route('/presets', methods=['GET'])
+@bp.route('/api/v1/presets', methods=['GET'])
 def get_official_presets():
     """
     ENDPOINT 1: GET /presets (PUBLIC)
@@ -125,7 +126,9 @@ def create_user_preset():
         return jsonify({"error": "Bad Request", "details": "Missing JSON request body"}), 400
         
     name = data.get('name')
-    description = data.get('description', '')
+    description = data.get('description')
+    if description is None or not isinstance(description, str):
+        description = ''
     flags = data.get('flags')
     
     # Trap Null/Blank values: If 'flags' or 'name' parameters are missing or contain blank strings, reject with 400
@@ -143,7 +146,7 @@ def create_user_preset():
         payload_data = {
             'id': doc_ref.id,
             'name': name.strip(),
-            'description': description.strip() if isinstance(description, str) else str(description),
+            'description': description.strip(),
             'flags': flags.strip(),
             'is_official': False,  # Strictly hardcoded on backend to prevent user privilege escalation
             'owner_id': discord_id,
