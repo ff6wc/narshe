@@ -2,6 +2,7 @@ from flask import Flask, make_response
 from flask_cors import CORS
 from dotenv import load_dotenv
 import requests
+import re
 import api.metadata
 import api.generate
 import api.log
@@ -10,11 +11,16 @@ import api.seed
 import api.sprite
 import api.sprites
 import api.wc
+import api.auth
 
 # read in the env variables
 load_dotenv('.env')
 application = Flask(__name__)
-CORS(application)
+CORS(application, origins=[
+    "https://ff6worldscollide.com", "https://dev.ff6worldscollide.com",
+    re.compile(r"^https://.*\.pages\.dev$"),
+    "http://localhost:3000"
+])
 
 @application.route("/", methods=["GET"])
 def hello_world():
@@ -33,6 +39,8 @@ def get_sotws():
     return (resp.raw.read(), resp.status_code, resp.headers.items()) 
 
 #register the endpoints
+application.register_blueprint(api.auth.bp)
+
 application.register_blueprint(api.generate.bp)
 
 application.register_blueprint(api.log.bp)
