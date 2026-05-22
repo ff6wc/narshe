@@ -21,7 +21,7 @@ import api.presets
 application = Flask(__name__)
 CORS(application, origins=[
     "https://ff6worldscollide.com", "https://dev.ff6worldscollide.com",
-    re.compile(r"^https://.*ff6worldscollide\.pages\.dev$"),
+    re.compile(r"^https://.*\.pages\.dev$"),
     "http://localhost:3000"
 ])
 

@@ -161,12 +161,19 @@ def create_user_preset():
         return jsonify({"error": "Internal Server Error", "details": str(e)}), 500
 
 
+@bp.route('/api/v1/user-presets', methods=['DELETE'])
 @bp.route('/api/v1/user-presets/<preset_id>', methods=['DELETE'])
-def delete_user_preset(preset_id):
+def delete_user_preset(preset_id=None):
     """
-    ENDPOINT 4: DELETE /api/v1/user-presets/<preset_id> (AUTHENTICATED)
+    ENDPOINT 4: DELETE /api/v1/user-presets (AUTHENTICATED)
     Deletes a user's preset or lets administrators clean up records.
+    Can be specified via path parameter or via 'id' query parameter.
     """
+    if not preset_id:
+        preset_id = request.args.get('id')
+        
+    if not preset_id:
+        return jsonify({"error": "Bad Request", "details": "Preset 'id' must be provided as a path parameter or a query parameter."}), 400
     payload, err_resp, status = authenticate_request()
     if err_resp:
         return jsonify(err_resp), status
