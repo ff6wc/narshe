@@ -83,6 +83,7 @@ def get_user_presets():
     """
     ENDPOINT 2: GET /api/v1/user-presets (AUTHENTICATED)
     Fetches a user's unique configurations based on their authenticated token session.
+    Supports streaming all presets for administrators who pass all=true.
     """
     payload, err_resp, status = authenticate_request()
     if err_resp:
@@ -93,9 +94,16 @@ def get_user_presets():
         logger.error("[PRESETS ERROR] Token decoded successfully but 'sub' claim is missing.")
         return jsonify({"error": "Unauthorized", "details": "Token missing sub claim"}), 401
         
+    is_admin = payload.get('isAdmin', False) or payload.get('is_admin', False) or payload.get('isSuperadmin', False)
+    
     try:
         presets_ref = get_db().collection('presets')
-        query = presets_ref.where('creator_id', '==', discord_id).stream()
+        
+        # Admin bypass to load all database records (e.g. for the Admin dashboard)
+        if is_admin and request.args.get('all') == 'true':
+            query = presets_ref.stream()
+        else:
+            query = presets_ref.where('creator_id', '==', discord_id).stream()
         
         output = []
         for doc in query:
@@ -131,6 +139,9 @@ def create_user_preset():
         description = ''
     flags = data.get('flags')
     
+    # Extract creator name from payload or JWT claims
+    creator_name = data.get('creator_name') or payload.get('username') or payload.get('name') or 'Discord User'
+    
     # Trap Null/Blank values: If 'flags' or 'name' parameters are missing or contain blank strings, reject with 400
     if name is None or not isinstance(name, str) or name.strip() == '':
         return jsonify({"error": "Bad Request", "details": "Parameter 'name' is missing or blank"}), 400
@@ -150,6 +161,7 @@ def create_user_preset():
             'flags': flags.strip(),
             'official': False,  # Strictly hardcoded on backend to prevent user privilege escalation
             'creator_id': discord_id,
+            'creator_name': creator_name.strip(),
             'tags': [],
             'created_at': created_at
         }
@@ -205,3 +217,94 @@ def delete_user_preset(preset_id=None):
     except Exception as e:
         logger.error(f"[PRESETS ERROR] Failed to delete preset {preset_id}: {e}")
         return jsonify({"error": "Internal Server Error", "details": str(e)}), 500
+
+@bp.route('/api/v1/user-presets', methods=['PUT'])
+def update_user_preset():
+    """
+    ENDPOINT 5: PUT /api/v1/user-presets (AUTHENTICATED)
+    Updates an existing preset's properties (tags, flags, description, or download_timestamp).
+    Supports:
+    - User updating the download_timestamp when generating a seed using a selected preset (flags and presetName in body)
+    - Admin or Creator updating the tags, flags or description of a preset (id or name/presetName in body)
+    """
+    payload, err_resp, status = authenticate_request()
+    if err_resp:
+        return jsonify(err_resp), status
+        
+    discord_id = payload.get('sub')
+    if not discord_id:
+        logger.error("[PRESETS ERROR] Token decoded successfully but 'sub' claim is missing on PUT.")
+        return jsonify({"error": "Unauthorized", "details": "Token missing sub claim"}), 401
+        
+    is_admin = payload.get('isAdmin', False) or payload.get('is_admin', False) or payload.get('isSuperadmin', False)
+    
+    data = request.get_json(silent=True)
+    if not data:
+        return jsonify({"error": "Bad Request", "details": "Missing JSON request body"}), 400
+        
+    preset_id = data.get('id')
+    name = data.get('name') or data.get('presetName')
+    flags = data.get('flags')
+    tags = data.get('tags')
+    description = data.get('description')
+    
+    db = get_db()
+    doc_ref = None
+    
+    # 1. Locate the document by ID or falls back to name search
+    if preset_id:
+        doc_ref = db.collection('presets').document(preset_id)
+        doc = doc_ref.get()
+        if not doc.exists:
+            return jsonify({"error": "Not Found", "details": f"Preset with id '{preset_id}' not found"}), 404
+    elif name:
+        presets_ref = db.collection('presets')
+        # Search by name. If not admin, restrict search to the user's own presets
+        if is_admin:
+            query = presets_ref.where('name', '==', name.strip()).limit(1).stream()
+        else:
+            query = presets_ref.where('name', '==', name.strip()).where('creator_id', '==', discord_id).limit(1).stream()
+            
+        docs = list(query)
+        if not docs:
+            # Fallback search for public download tracking (updating download_timestamp of official or shared presets)
+            query_all = presets_ref.where('name', '==', name.strip()).limit(1).stream()
+            docs = list(query_all)
+            if not docs:
+                return jsonify({"error": "Not Found", "details": f"Preset '{name}' not found"}), 404
+        
+        doc_ref = docs[0].reference
+        doc = docs[0]
+    else:
+        return jsonify({"error": "Bad Request", "details": "Must provide 'id' or 'name'/'presetName' to identify preset"}), 400
+        
+    preset_data = doc.to_dict()
+    creator_id = preset_data.get('creator_id')
+    
+    # 2. Check permissions: owner can edit, admins can edit, or anyone can track a download
+    is_download_update = ('flags' in data or 'presetName' in data) and len(data) <= 3 and 'tags' not in data
+    
+    if creator_id == discord_id or is_admin or is_download_update:
+        update_data = {}
+        
+        if tags is not None and (is_admin or creator_id == discord_id):
+            update_data['tags'] = tags
+            if is_admin:
+                update_data['official'] = 'official' in tags
+                
+        if flags is not None and (creator_id == discord_id or is_admin):
+            update_data['flags'] = flags
+            
+        if description is not None and (creator_id == discord_id or is_admin):
+            update_data['description'] = description.strip()
+            
+        # Record/Update the download timestamp
+        update_data['download_timestamp'] = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+        
+        doc_ref.update(update_data)
+        
+        response_data = {**preset_data, **update_data}
+        return jsonify(response_data), 200
+    else:
+        logger.warning(f"[PRESETS SECURITY WARNING] User {discord_id} attempted unauthorized update of preset {preset_id or name}")
+        return jsonify({"error": "Forbidden", "details": "You are not authorized to update this preset"}), 403
