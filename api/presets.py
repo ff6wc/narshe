@@ -71,7 +71,9 @@ def get_official_presets():
 
         output = []
         for doc in query:
-            output.append(doc.to_dict())
+            data = doc.to_dict()
+            data['id'] = doc.id
+            output.append(data)
         return jsonify(output), 200
     except Exception as e:
         logger.error(f"[PRESETS ERROR] Failed to fetch official presets: {e}")
@@ -107,7 +109,9 @@ def get_user_presets():
         
         output = []
         for doc in query:
-            output.append(doc.to_dict())
+            data = doc.to_dict()
+            data['id'] = doc.id
+            output.append(data)
         return jsonify(output), 200
     except Exception as e:
         logger.error(f"[PRESETS ERROR] Failed to fetch user presets for creator_id {discord_id}: {e}")
@@ -143,8 +147,24 @@ def create_user_preset():
     creator_name = data.get('creator_name') or payload.get('username') or payload.get('name') or 'Discord User'
     
     # Trap Null/Blank values: If 'flags' or 'name' parameters are missing or contain blank strings, reject with 400
+        # Trap Null/Blank values and reject duplicate names for this user
     if name is None or not isinstance(name, str) or name.strip() == '':
         return jsonify({"error": "Bad Request", "details": "Parameter 'name' is missing or blank"}), 400
+        
+    db = get_db()
+    
+    # Check if this user already has a preset with the same name (case-insensitive)
+    existing_query = db.collection('presets')\
+                       .where('creator_id', '==', discord_id)\
+                       .where('name', '==', name.strip())\
+                       .limit(1).stream()
+                       
+    if list(existing_query):
+        return jsonify({
+            "error": "Conflict", 
+            "details": f"A preset named '{name.strip()}' already exists. Please choose a different name or delete the old one first."
+        }), 409
+    
     if flags is None or not isinstance(flags, str) or flags.strip() == '':
         return jsonify({"error": "Bad Request", "details": "Parameter 'flags' is missing or blank"}), 400
         
