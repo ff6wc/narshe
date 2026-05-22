@@ -63,11 +63,11 @@ def authenticate_request():
 def get_official_presets():
     """
     ENDPOINT 1: GET /presets (PUBLIC)
-    Filter the 'presets' collection for documents where 'is_official' is set to True.
+    Filter the 'presets' collection for documents where 'official' is set to True.
     """
     try:
         presets_ref = get_db().collection('presets')
-        query = presets_ref.where('is_official', '==', True).stream()
+        query = presets_ref.where('official', '==', True).stream()
 
         output = []
         for doc in query:
@@ -95,14 +95,14 @@ def get_user_presets():
         
     try:
         presets_ref = get_db().collection('presets')
-        query = presets_ref.where('owner_id', '==', discord_id).stream()
+        query = presets_ref.where('creator_id', '==', discord_id).stream()
         
         output = []
         for doc in query:
             output.append(doc.to_dict())
         return jsonify(output), 200
     except Exception as e:
-        logger.error(f"[PRESETS ERROR] Failed to fetch user presets for owner_id {discord_id}: {e}")
+        logger.error(f"[PRESETS ERROR] Failed to fetch user presets for creator_id {discord_id}: {e}")
         return jsonify({"error": "Internal Server Error", "details": str(e)}), 500
 
 
@@ -148,8 +148,8 @@ def create_user_preset():
             'name': name.strip(),
             'description': description.strip(),
             'flags': flags.strip(),
-            'is_official': False,  # Strictly hardcoded on backend to prevent user privilege escalation
-            'owner_id': discord_id,
+            'official': False,  # Strictly hardcoded on backend to prevent user privilege escalation
+            'creator_id': discord_id,
             'tags': [],
             'created_at': created_at
         }
@@ -193,14 +193,14 @@ def delete_user_preset(preset_id=None):
             return jsonify({"error": "Not Found", "details": f"Preset '{preset_id}' not found"}), 404
             
         preset_data = doc.to_dict()
-        owner_id = preset_data.get('owner_id')
+        creator_id = preset_data.get('creator_id')
         
-        # Security Verification Trap: owner_id matches OR user has isAdmin claim flag
-        if owner_id == discord_id or is_admin:
+        # Security Verification Trap: creator_id matches OR user has isAdmin claim flag
+        if creator_id == discord_id or is_admin:
             doc_ref.delete()
             return jsonify({"success": True, "message": "Preset deleted successfully"}), 200
         else:
-            logger.warning(f"[PRESETS SECURITY WARNING] User {discord_id} attempted unauthorized deletion of preset {preset_id} owned by {owner_id}")
+            logger.warning(f"[PRESETS SECURITY WARNING] User {discord_id} attempted unauthorized deletion of preset {preset_id} owned by {creator_id}")
             return jsonify({"error": "Forbidden", "details": "You are not authorized to delete this preset"}), 403
     except Exception as e:
         logger.error(f"[PRESETS ERROR] Failed to delete preset {preset_id}: {e}")
