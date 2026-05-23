@@ -171,19 +171,33 @@ def create_user_preset():
     try:
         doc_ref = get_db().collection('presets').document()
         
-        # Format the ISO 8601 UTC timestamp tracking creation time (e.g. "2026-05-21T19:20:00Z")
-        created_at = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+        # Format the ISO 8601 UTC timestamp tracking creation time (e.g. "2026-05-21 19:20:00.123456")
+        created_at = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S.%f")
         
+        # Parse standard schema fields with safe defaults
+        arguments = str(data.get('arguments') or data.get('preset_arguments') or '')
+        gen_count = int(data.get('gen_count') or 0)
+        hidden = bool(data.get('hidden') or False)
+        validation_error = data.get('validation_error')  # can be None
+        validation_status = str(data.get('validation_status') or 'VALID')
+
         payload_data = {
             'id': doc_ref.id,
             'name': name.strip(),
+            'preset_name': name.strip(),
+            'preset_name_lower': name.strip().lower(),
             'description': description.strip(),
             'flags': flags.strip(),
             'official': False,  # Strictly hardcoded on backend to prevent user privilege escalation
             'creator_id': discord_id,
             'creator_name': creator_name.strip(),
             'tags': [],
-            'created_at': created_at
+            'created_at': created_at,
+            'arguments': arguments,
+            'gen_count': gen_count,
+            'hidden': hidden,
+            'validation_error': validation_error,
+            'validation_status': validation_status
         }
         
         doc_ref.set(payload_data)
