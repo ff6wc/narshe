@@ -4,6 +4,7 @@ from datetime import datetime, timezone
 import jwt
 from flask import Blueprint, request, jsonify
 from google.cloud import firestore
+from api_utils.collections import SEEDLIST
 
 # Set up logging
 logger = logging.getLogger(__name__)
@@ -64,7 +65,7 @@ def create_seed_entry():
     """
     Creates a new seed entry in the seedlist Firestore collection.
     Supports authenticated (via JWT) and anonymous users.
-    Auto-increments the document ID using a transaction on a metadata counter.
+    Auto-increments the document ID and writes the new document atomically inside a single transaction.
     """
     # 1. Parse optional auth token
     payload, err_resp, status = authenticate_request_optional()
@@ -117,41 +118,40 @@ def create_seed_entry():
         except ValueError:
             channel_id = None
             
-    # Default to current datetime in UTC ISO format if not supplied
-    timestamp_str = data.get('timestamp')
-    if not timestamp_str or not isinstance(timestamp_str, str):
-        timestamp_str = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    # Always use server-side UTC timestamp for consistency and data integrity
+    timestamp_str = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
         
     args_list = data.get('args_list')
     flagstring = data.get('flagstring')
     hash_val = data.get('hash')
     seed_val = data.get('seed')
     
-    # 4. Atomic Auto-Increment via Firestore Transaction
+    # 4. Atomic Auto-Increment and Document Creation via a single Firestore Transaction
     db = get_db()
     
     @firestore.transactional
-    def get_next_id(transaction, counter_ref):
+    def create_entry_in_transaction(transaction, counter_ref, db, payload_template):
         snapshot = counter_ref.get(transaction=transaction)
         if snapshot.exists:
             current_id = snapshot.get("last_id")
         else:
             current_id = 0
         new_id = current_id + 1
+        
+        # Increment counter
         transaction.set(counter_ref, {"last_id": new_id})
-        return new_id
+        
+        # Build and save the document
+        doc_ref = db.collection(SEEDLIST).document(str(new_id))
+        payload_data = {**payload_template, 'id': new_id}
+        transaction.set(doc_ref, payload_data)
+        
+        return payload_data
         
     try:
         counter_ref = db.collection('counters').document('seedlist')
         transaction = db.transaction()
-        new_id = get_next_id(transaction, counter_ref)
-        
-        # 5. Build and save the document
-        from api_utils.collections import SEEDLIST
-        doc_ref = db.collection(SEEDLIST).document(str(new_id))
-        
-        payload_data = {
-            'id': new_id,
+        saved_payload = create_entry_in_transaction(transaction, counter_ref, db, {
             'creator_id': creator_id,
             'creator_name': creator_name.strip() if isinstance(creator_name, str) else creator_name,
             'seed_type': seed_type.strip(),
@@ -166,14 +166,11 @@ def create_seed_entry():
             'flagstring': flagstring.strip() if isinstance(flagstring, str) else flagstring,
             'hash': hash_val.strip() if isinstance(hash_val, str) else hash_val,
             'seed': seed_val.strip() if isinstance(seed_val, str) else seed_val
-        }
+        })
         
-        doc_ref.set(payload_data)
-        return jsonify(payload_data), 201
+        return jsonify(saved_payload), 201
     except Exception as e:
-        import traceback
-        traceback.print_exc()
-        logger.error(f"[SEEDLIST ERROR] Failed to create seed entry: {e}")
+        logger.exception(f"[SEEDLIST ERROR] Failed to create seed entry: {e}")
         return jsonify({"error": "Internal Server Error", "details": str(e)}), 500
 
 
@@ -183,10 +180,9 @@ def get_seedlist():
     """
     Fetches the seedlist records from Firestore for reporting.
     Supports filtering by creator_id and seed_type.
-    Sorts elements in-memory by timestamp descending.
+    Uses native order_by and limit on the query object for performance and cost efficiency.
     """
     try:
-        from api_utils.collections import SEEDLIST
         db = get_db()
         seedlist_ref = db.collection(SEEDLIST)
         query = seedlist_ref
@@ -204,13 +200,8 @@ def get_seedlist():
         if seed_type_param:
             query = query.where('seed_type', '==', seed_type_param.strip())
             
-        docs = query.stream()
-        output = []
-        for doc in docs:
-            output.append(doc.to_dict())
-            
-        # In-memory sort by timestamp descending to avoid GCP composite index errors
-        output.sort(key=lambda x: x.get('timestamp') or '', reverse=True)
+        # Native sort by timestamp descending
+        query = query.order_by('timestamp', direction=firestore.Query.DESCENDING)
         
         # Apply limit parameter
         limit_val = 100
@@ -221,8 +212,14 @@ def get_seedlist():
             except ValueError:
                 return jsonify({"error": "Bad Request", "details": "limit must be an integer"}), 400
                 
-        output = output[:limit_val]
+        query = query.limit(limit_val)
+        
+        docs = query.stream()
+        output = []
+        for doc in docs:
+            output.append(doc.to_dict())
+            
         return jsonify(output), 200
     except Exception as e:
-        logger.error(f"[SEEDLIST ERROR] Failed to fetch seedlist: {e}")
+        logger.exception(f"[SEEDLIST ERROR] Failed to fetch seedlist: {e}")
         return jsonify({"error": "Internal Server Error", "details": str(e)}), 500
