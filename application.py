@@ -17,6 +17,7 @@ import api.sprites
 import api.wc
 import api.auth
 import api.presets
+import api.seedlist
 
 application = Flask(__name__)
 CORS(application, origins=[
@@ -39,6 +40,7 @@ def get_sotws():
 #register the endpoints
 application.register_blueprint(api.auth.bp)
 application.register_blueprint(api.presets.bp)
+application.register_blueprint(api.seedlist.bp)
 
 application.register_blueprint(api.generate.bp)
 
