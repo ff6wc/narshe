@@ -253,22 +253,14 @@ def get_seedlist_count():
         db = get_db()
         seedlist_ref = db.collection(SEEDLIST)
         
-        creator_id_str = str(creator_id_param)
-        
-        # 1. Count for string creator_id
-        query_str = seedlist_ref.where('creator_id', '==', creator_id_str)
-        count_str = query_str.count().get()[0].value
-        
-        # 2. Count for integer creator_id (if convertible)
-        count_int = 0
+        creator_ids = [str(creator_id_param)]
         try:
-            creator_id_int = int(creator_id_param)
-            query_int = seedlist_ref.where('creator_id', '==', creator_id_int)
-            count_int = query_int.count().get()[0].value
+            creator_ids.append(int(creator_id_param))
         except ValueError:
             pass
             
-        total_count = count_str + count_int
+        query = seedlist_ref.where('creator_id', 'in', creator_ids)
+        total_count = query.count().get()[0].value
         
         return jsonify({"count": total_count}), 200
     except Exception as e:
