@@ -27,9 +27,9 @@ def authenticate_request():
         tuple: (decoded_payload, error_response_dict, status_code)
         If successful, error_response_dict is None.
     """
-    # Allow local Dev Admin Bypass first
+    # Allow local Dev Admin Bypass first (only in development environment)
     dev_bypass = request.headers.get('X-Dev-Bypass-Admin')
-    if dev_bypass == 'true':
+    if dev_bypass == 'true' and os.environ.get('FLASK_ENV') == 'development':
         # Return a mocked admin payload
         return {
             'sub': '12345',
@@ -392,8 +392,8 @@ def create_tag():
         return jsonify({"error": "Bad Request", "details": "Missing 'tag' parameter in body"}), 400
 
     tag_name = str(data['tag']).strip().lower()
-    if not tag_name:
-        return jsonify({"error": "Bad Request", "details": "Tag name cannot be blank"}), 400
+    if not tag_name or not all(c.isalnum() or c in '-_' for c in tag_name):
+        return jsonify({"error": "Bad Request", "details": "Tag name must be alphanumeric and can only contain hyphens or underscores"}), 400
 
     try:
         get_db().collection('tags').document(tag_name).set({})
@@ -427,22 +427,26 @@ def rename_tag():
     if not old_tag or not new_tag:
         return jsonify({"error": "Bad Request", "details": "Tag names cannot be blank"}), 400
 
+    if not all(c.isalnum() or c in '-_' for c in new_tag):
+        return jsonify({"error": "Bad Request", "details": "New tag name must be alphanumeric and can only contain hyphens or underscores"}), 400
+
     if old_tag == new_tag:
         return jsonify({"success": True}), 200
 
     try:
         db = get_db()
+        batch = db.batch()
         
         # 1. Rename tag document in 'tags' collection
         old_tag_ref = db.collection('tags').document(old_tag)
         new_tag_ref = db.collection('tags').document(new_tag)
         
         if old_tag_ref.get().exists:
-            new_tag_ref.set({})
-            old_tag_ref.delete()
+            batch.set(new_tag_ref, {})
+            batch.delete(old_tag_ref)
         else:
             # If the old tag doc didn't exist for some reason, still create the new one
-            new_tag_ref.set({})
+            batch.set(new_tag_ref, {})
 
         # 2. Query and update all presets containing the old tag
         presets_ref = db.collection('presets')
@@ -455,11 +459,12 @@ def rename_tag():
             updated_tags = list(dict.fromkeys(updated_tags))
             is_official = 'official' in updated_tags
             
-            doc.reference.update({
+            batch.update(doc.reference, {
                 'tags': updated_tags,
                 'official': is_official
             })
 
+        batch.commit()
         return jsonify({"success": True}), 200
     except Exception as e:
         logger.error(f"[PRESETS ERROR] Failed to rename tag '{old_tag}' to '{new_tag}': {e}")
@@ -490,9 +495,10 @@ def delete_tag():
 
     try:
         db = get_db()
+        batch = db.batch()
         
         # 1. Delete tag document from 'tags' collection
-        db.collection('tags').document(tag_to_delete).delete()
+        batch.delete(db.collection('tags').document(tag_to_delete))
 
         # 2. Query and update all presets containing the tag
         presets_ref = db.collection('presets')
@@ -503,11 +509,12 @@ def delete_tag():
             updated_tags = [t for t in current_tags if t != tag_to_delete]
             is_official = 'official' in updated_tags
             
-            doc.reference.update({
+            batch.update(doc.reference, {
                 'tags': updated_tags,
                 'official': is_official
             })
 
+        batch.commit()
         return jsonify({"success": True}), 200
     except Exception as e:
         logger.error(f"[PRESETS ERROR] Failed to delete tag '{tag_to_delete}': {e}")
