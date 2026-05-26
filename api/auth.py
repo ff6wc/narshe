@@ -37,6 +37,9 @@ if missing_vars:
 
 @bp.route('/login', methods=['GET'])
 def login():
+    import json
+    import base64
+
     # Defensive check to ensure we can build the redirect URL
     if not DISCORD_CLIENT_ID or not DISCORD_REDIRECT_URI:
         logger.error("[AUTH ERROR] Cannot initiate login. DISCORD_CLIENT_ID or DISCORD_REDIRECT_URI is not configured.")
