@@ -3,7 +3,6 @@ from api_utils.get_seed_payload import get_seed_payload
 from api_utils.get_seed_url import get_seed_url
 from api_utils.create_seed import create_seed
 
-import xdelta3
 import json
 import os
 import shutil
@@ -118,8 +117,23 @@ class GenerateHandler():
         #  wc_filename = dir + f"/{base_filename}-beta.smc"
         #  logging.debug(out_filename, wc_filename)
         #  self._apply_beta_changes(out_filename, wc_filename)
-        with open(in_filename, "rb") as old, open(wc_filename, "rb") as new, open(log_filename, "rb") as logfile, open(manifest_filename, "rb") as manifestfile:
-          raw_patch = xdelta3.encode(old.read(), new.read())
+        patch_filename = dir + "/patch.xdelta3"
+        try:
+          # Run native xdelta3 CLI to generate the patch
+          subprocess.run(["xdelta3", "-e", "-s", in_filename, wc_filename, patch_filename], check=True)
+        except subprocess.CalledProcessError as e:
+          logging.error(f"xdelta3 command failed with exit code {e.returncode}")
+          return Response (
+            response = json.dumps({
+              'errors': ['Delta patch generation failed. See server logs for details.'],
+              'success': False
+            }).encode(),
+            status = 500,
+            mimetype='application/json',
+          )
+
+        with open(patch_filename, "rb") as patchfile, open(log_filename, "rb") as logfile, open(manifest_filename, "rb") as manifestfile:
+          raw_patch = patchfile.read()
 
           log_bytes = logfile.read()
           log = log_bytes.decode('utf-8')

@@ -22,8 +22,8 @@ WORKDIR $APP_HOME
 COPY . ./
 
 # ---> INJECTED FIX START <---
-# Install git, clear the empty submodule placeholder, and force-clone the DEV engine
-RUN apt-get update && apt-get install -y git
+# Install git and xdelta3, clear the empty submodule placeholder, and force-clone the DEV engine
+RUN apt-get update && apt-get install -y git xdelta3
 RUN rm -rf WorldsCollide && git clone -b dev https://github.com/ff6wc/WorldsCollide.git WorldsCollide
 # ---> INJECTED FIX END <---
 
