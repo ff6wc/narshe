@@ -235,3 +235,43 @@ def get_seedlist():
     except Exception as e:
         logger.exception(f"[SEEDLIST ERROR] Failed to fetch seedlist: {e}")
         return jsonify({"error": "Internal Server Error", "details": str(e)}), 500
+
+
+@bp.route('/seedlist/count', methods=['GET'])
+@bp.route('/api/v1/seedlist/count', methods=['GET'])
+def get_seedlist_count():
+    """
+    Returns the total number of seeds rolled by a given creator_id.
+    Uses Firestore's count() aggregation query for maximum efficiency,
+    safely handling string and integer (int64) type representations of creator_id.
+    """
+    try:
+        creator_id_param = request.args.get('creator_id')
+        if not creator_id_param:
+            return jsonify({"error": "Bad Request", "details": "Missing 'creator_id' parameter"}), 400
+            
+        db = get_db()
+        seedlist_ref = db.collection(SEEDLIST)
+        
+        creator_id_str = str(creator_id_param)
+        
+        # 1. Count for string creator_id
+        query_str = seedlist_ref.where('creator_id', '==', creator_id_str)
+        count_str = query_str.count().get()[0].value
+        
+        # 2. Count for integer creator_id (if convertible)
+        count_int = 0
+        try:
+            creator_id_int = int(creator_id_param)
+            query_int = seedlist_ref.where('creator_id', '==', creator_id_int)
+            count_int = query_int.count().get()[0].value
+        except ValueError:
+            pass
+            
+        total_count = count_str + count_int
+        
+        return jsonify({"count": total_count}), 200
+    except Exception as e:
+        logger.exception(f"[SEEDLIST ERROR] Failed to fetch seedlist count: {e}")
+        return jsonify({"error": "Internal Server Error", "details": str(e)}), 500
+
