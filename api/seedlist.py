@@ -260,7 +260,7 @@ def get_seedlist_count():
             pass
             
         query = seedlist_ref.where('creator_id', 'in', creator_ids)
-        total_count = query.count().get()[0].value
+        total_count = query.count().get()[0][0].value
         
         return jsonify({"count": total_count}), 200
     except Exception as e:
