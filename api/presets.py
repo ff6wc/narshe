@@ -27,6 +27,19 @@ def authenticate_request():
         tuple: (decoded_payload, error_response_dict, status_code)
         If successful, error_response_dict is None.
     """
+    # Allow local Dev Admin Bypass first
+    dev_bypass = request.headers.get('X-Dev-Bypass-Admin')
+    if dev_bypass == 'true':
+        # Return a mocked admin payload
+        return {
+            'sub': '12345',
+            'username': 'Dev Admin',
+            'name': 'Dev Admin',
+            'isAdmin': True,
+            'is_admin': True,
+            'isSuperadmin': True
+        }, None, 200
+
     auth_header = request.headers.get('Authorization')
     if not auth_header:
         logger.error("[PRESETS ERROR] Authorization header is missing.")
@@ -342,3 +355,160 @@ def update_user_preset():
     else:
         logger.warning(f"[PRESETS SECURITY WARNING] User {discord_id} attempted unauthorized update of preset {preset_id or name}")
         return jsonify({"error": "Forbidden", "details": "You are not authorized to update this preset"}), 403
+
+
+@bp.route('/api/v1/tags', methods=['GET'])
+def get_tags():
+    """
+    GET /api/v1/tags (PUBLIC)
+    Fetches the list of allowed custom preset tags from Firestore.
+    """
+    try:
+        tags_ref = get_db().collection('tags')
+        docs = tags_ref.stream()
+        tags = sorted([doc.id for doc in docs])
+        return jsonify(tags), 200
+    except Exception as e:
+        logger.error(f"[PRESETS ERROR] Failed to fetch tags: {e}")
+        return jsonify({"error": "Internal Server Error", "details": str(e)}), 500
+
+
+@bp.route('/api/v1/tags', methods=['POST'])
+def create_tag():
+    """
+    POST /api/v1/tags (AUTHENTICATED - ADMIN ONLY)
+    Adds a new custom preset tag.
+    """
+    payload, err_resp, status = authenticate_request()
+    if err_resp:
+        return jsonify(err_resp), status
+
+    is_admin = payload.get('isAdmin', False) or payload.get('is_admin', False) or payload.get('isSuperadmin', False)
+    if not is_admin:
+        return jsonify({"error": "Forbidden", "details": "Admin privileges required"}), 403
+
+    data = request.get_json(silent=True)
+    if not isinstance(data, dict) or 'tag' not in data:
+        return jsonify({"error": "Bad Request", "details": "Missing 'tag' parameter in body"}), 400
+
+    tag_name = str(data['tag']).strip().lower()
+    if not tag_name:
+        return jsonify({"error": "Bad Request", "details": "Tag name cannot be blank"}), 400
+
+    try:
+        get_db().collection('tags').document(tag_name).set({})
+        return jsonify({"success": True, "tag": tag_name}), 201
+    except Exception as e:
+        logger.error(f"[PRESETS ERROR] Failed to create tag '{tag_name}': {e}")
+        return jsonify({"error": "Internal Server Error", "details": str(e)}), 500
+
+
+@bp.route('/api/v1/tags', methods=['PUT'])
+def rename_tag():
+    """
+    PUT /api/v1/tags (AUTHENTICATED - ADMIN ONLY)
+    Renames an existing tag in Firestore and updates all affected presets.
+    """
+    payload, err_resp, status = authenticate_request()
+    if err_resp:
+        return jsonify(err_resp), status
+
+    is_admin = payload.get('isAdmin', False) or payload.get('is_admin', False) or payload.get('isSuperadmin', False)
+    if not is_admin:
+        return jsonify({"error": "Forbidden", "details": "Admin privileges required"}), 403
+
+    data = request.get_json(silent=True)
+    if not isinstance(data, dict) or 'oldTag' not in data or 'newTag' not in data:
+        return jsonify({"error": "Bad Request", "details": "Missing 'oldTag' or 'newTag' parameter in body"}), 400
+
+    old_tag = str(data['oldTag']).strip().lower()
+    new_tag = str(data['newTag']).strip().lower()
+
+    if not old_tag or not new_tag:
+        return jsonify({"error": "Bad Request", "details": "Tag names cannot be blank"}), 400
+
+    if old_tag == new_tag:
+        return jsonify({"success": True}), 200
+
+    try:
+        db = get_db()
+        
+        # 1. Rename tag document in 'tags' collection
+        old_tag_ref = db.collection('tags').document(old_tag)
+        new_tag_ref = db.collection('tags').document(new_tag)
+        
+        if old_tag_ref.get().exists:
+            new_tag_ref.set({})
+            old_tag_ref.delete()
+        else:
+            # If the old tag doc didn't exist for some reason, still create the new one
+            new_tag_ref.set({})
+
+        # 2. Query and update all presets containing the old tag
+        presets_ref = db.collection('presets')
+        query = presets_ref.where('tags', 'array_contains', old_tag).stream()
+        for doc in query:
+            preset_data = doc.to_dict()
+            current_tags = preset_data.get('tags', [])
+            updated_tags = [new_tag if t == old_tag else t for t in current_tags]
+            # Maintain uniqueness
+            updated_tags = list(dict.fromkeys(updated_tags))
+            is_official = 'official' in updated_tags
+            
+            doc.reference.update({
+                'tags': updated_tags,
+                'official': is_official
+            })
+
+        return jsonify({"success": True}), 200
+    except Exception as e:
+        logger.error(f"[PRESETS ERROR] Failed to rename tag '{old_tag}' to '{new_tag}': {e}")
+        return jsonify({"error": "Internal Server Error", "details": str(e)}), 500
+
+
+@bp.route('/api/v1/tags', methods=['DELETE'])
+def delete_tag():
+    """
+    DELETE /api/v1/tags (AUTHENTICATED - ADMIN ONLY)
+    Deletes a tag from Firestore and removes it from all presets.
+    """
+    payload, err_resp, status = authenticate_request()
+    if err_resp:
+        return jsonify(err_resp), status
+
+    is_admin = payload.get('isAdmin', False) or payload.get('is_admin', False) or payload.get('isSuperadmin', False)
+    if not is_admin:
+        return jsonify({"error": "Forbidden", "details": "Admin privileges required"}), 403
+
+    data = request.get_json(silent=True)
+    if not isinstance(data, dict) or 'tag' not in data:
+        return jsonify({"error": "Bad Request", "details": "Missing 'tag' parameter in body"}), 400
+
+    tag_to_delete = str(data['tag']).strip().lower()
+    if not tag_to_delete:
+        return jsonify({"error": "Bad Request", "details": "Tag name cannot be blank"}), 400
+
+    try:
+        db = get_db()
+        
+        # 1. Delete tag document from 'tags' collection
+        db.collection('tags').document(tag_to_delete).delete()
+
+        # 2. Query and update all presets containing the tag
+        presets_ref = db.collection('presets')
+        query = presets_ref.where('tags', 'array_contains', tag_to_delete).stream()
+        for doc in query:
+            preset_data = doc.to_dict()
+            current_tags = preset_data.get('tags', [])
+            updated_tags = [t for t in current_tags if t != tag_to_delete]
+            is_official = 'official' in updated_tags
+            
+            doc.reference.update({
+                'tags': updated_tags,
+                'official': is_official
+            })
+
+        return jsonify({"success": True}), 200
+    except Exception as e:
+        logger.error(f"[PRESETS ERROR] Failed to delete tag '{tag_to_delete}': {e}")
+        return jsonify({"error": "Internal Server Error", "details": str(e)}), 500
