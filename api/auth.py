@@ -33,6 +33,9 @@ if missing_vars:
 
 @bp.route('/login', methods=['GET'])
 def login():
+    import json
+    import base64
+
     # Defensive check to ensure we can build the redirect URL
     if not DISCORD_CLIENT_ID or not DISCORD_REDIRECT_URI:
         logger.error("[AUTH ERROR] Cannot initiate login. DISCORD_CLIENT_ID or DISCORD_REDIRECT_URI is not configured.")
@@ -41,8 +44,17 @@ def login():
             "details": "Discord client ID or redirect URI is missing."
         }), 500
 
-    # CSRF Protection: Generate a unique, cryptographically strong random state string
-    state = secrets.token_urlsafe(32)
+    origin = request.args.get('origin') or ULTIMA_FRONTEND_URL or "https://ff6worldscollide.com"
+
+    # CSRF Protection: Generate a unique, cryptographically strong random token
+    csrf_token = secrets.token_urlsafe(32)
+
+    # Encode csrf_token and origin into state
+    state_payload = {
+        "csrf_token": csrf_token,
+        "origin": origin
+    }
+    state = base64.urlsafe_b64encode(json.dumps(state_payload).encode()).decode()
 
     discord_auth_url = (
         f"{DISCORD_API_BASE}/oauth2/authorize"
@@ -89,6 +101,17 @@ def callback():
             "error": "Unauthorized",
             "details": "CSRF validation failed: State parameter mismatch or missing."
         }), 403
+
+    # Recover the origin from state parameter
+    import json
+    import base64
+    origin = ULTIMA_FRONTEND_URL or "https://ff6worldscollide.com"
+    if state_param:
+        try:
+            state_payload = json.loads(base64.urlsafe_b64decode(state_param.encode()).decode())
+            origin = state_payload.get('origin', origin)
+        except Exception as e:
+            logger.error(f"[AUTH ERROR] Failed to decode state parameter: {e}")
 
     code = request.args.get('code')
     if not code:
@@ -177,9 +200,10 @@ def callback():
         logger.error(f"[AUTH ERROR] JWT signing failed: {e}")
         return jsonify({"error": "Failed to generate session token"}), 500
 
-    # 4. Redirect the Client back to Ultima Frontend using a URL fragment (#token=)
-    # This prevents the JWT from leaking in server logs or Referer headers.
-    target_url = f"{ULTIMA_FRONTEND_URL}/login-success#token={session_token}"
+    # 4. Redirect the Client back to the dynamic origin using a URL fragment (#token=)
+    # This prevents the JWT from leaking in server logs or Referer headers,
+    # and preserves backward-compatibility with the existing frontend token parser.
+    target_url = f"{origin}/login-success#token={session_token}"
     response = redirect(target_url)
     
     # Clean up the state cookie after a successful login flow completes
