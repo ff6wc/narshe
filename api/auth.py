@@ -4,6 +4,8 @@ import logging
 import secrets
 import requests
 import jwt
+import re
+import urllib.parse
 from flask import Blueprint, request, redirect, jsonify
 
 # Set up logging for environment diagnostics
@@ -45,6 +47,24 @@ def login():
         }), 500
 
     origin = request.args.get('origin') or ULTIMA_FRONTEND_URL or "https://ff6worldscollide.com"
+
+    # Validate origin to prevent Open Redirect vulnerabilities
+    try:
+        parsed_origin = urllib.parse.urlparse(origin)
+        origin_normalized = f"{parsed_origin.scheme}://{parsed_origin.netloc}".lower()
+        allowed_patterns = [
+            r"^https://ff6worldscollide\.com$",
+            r"^https://dev\.ff6worldscollide\.com$",
+            r"^https://[a-zA-Z0-9-]+\.pages\.dev$",
+            r"^http://localhost:(3000|8000)$"
+        ]
+        if ULTIMA_FRONTEND_URL:
+            parsed_ultima = urllib.parse.urlparse(ULTIMA_FRONTEND_URL)
+            allowed_patterns.append(re.escape(f"{parsed_ultima.scheme}://{parsed_ultima.netloc}".lower()))
+        if not any(re.match(pat, origin_normalized) for pat in allowed_patterns):
+            origin = ULTIMA_FRONTEND_URL or "https://ff6worldscollide.com"
+    except Exception:
+        origin = ULTIMA_FRONTEND_URL or "https://ff6worldscollide.com"
 
     # CSRF Protection: Generate a unique, cryptographically strong random token
     csrf_token = secrets.token_urlsafe(32)
@@ -112,6 +132,24 @@ def callback():
             origin = state_payload.get('origin', origin)
         except Exception as e:
             logger.error(f"[AUTH ERROR] Failed to decode state parameter: {e}")
+
+    # Validate origin to prevent Open Redirect vulnerabilities
+    try:
+        parsed_origin = urllib.parse.urlparse(origin)
+        origin_normalized = f"{parsed_origin.scheme}://{parsed_origin.netloc}".lower()
+        allowed_patterns = [
+            r"^https://ff6worldscollide\.com$",
+            r"^https://dev\.ff6worldscollide\.com$",
+            r"^https://[a-zA-Z0-9-]+\.pages\.dev$",
+            r"^http://localhost:(3000|8000)$"
+        ]
+        if ULTIMA_FRONTEND_URL:
+            parsed_ultima = urllib.parse.urlparse(ULTIMA_FRONTEND_URL)
+            allowed_patterns.append(re.escape(f"{parsed_ultima.scheme}://{parsed_ultima.netloc}".lower()))
+        if not any(re.match(pat, origin_normalized) for pat in allowed_patterns):
+            origin = ULTIMA_FRONTEND_URL or "https://ff6worldscollide.com"
+    except Exception:
+        origin = ULTIMA_FRONTEND_URL or "https://ff6worldscollide.com"
 
     code = request.args.get('code')
     if not code:
