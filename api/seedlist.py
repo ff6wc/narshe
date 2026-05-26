@@ -73,17 +73,13 @@ def create_seed_entry():
         return jsonify(err_resp), status
         
     # 2. Determine creator id and name
-    creator_id = 0
+    creator_id = "0"
     creator_name = "anonymous"
     
     if payload:
         discord_id = payload.get('sub')
         if discord_id:
-            try:
-                creator_id = int(discord_id)
-            except ValueError:
-                # Fallback in case Discord ID is not a numeric string
-                creator_id = 0
+            creator_id = str(discord_id)
         creator_name = payload.get('username') or payload.get('name') or "Discord User"
         
     # 3. Parse and validate request JSON body
@@ -104,19 +100,13 @@ def create_seed_entry():
     
     server_id = data.get('server_id')
     if server_id is not None:
-        try:
-            server_id = int(server_id)
-        except ValueError:
-            server_id = None
+        server_id = str(server_id)
             
     channel_name = data.get('channel_name')
     
     channel_id = data.get('channel_id')
     if channel_id is not None:
-        try:
-            channel_id = int(channel_id)
-        except ValueError:
-            channel_id = None
+        channel_id = str(channel_id)
             
     # Always use server-side UTC timestamp for consistency and data integrity
     timestamp_str = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
@@ -190,10 +180,7 @@ def get_seedlist():
         # Filtering by creator_id
         creator_id_param = request.args.get('creator_id')
         if creator_id_param is not None:
-            try:
-                query = query.where('creator_id', '==', int(creator_id_param))
-            except ValueError:
-                return jsonify({"error": "Bad Request", "details": "creator_id must be an integer"}), 400
+            query = query.where('creator_id', '==', str(creator_id_param))
                 
         # Filtering by seed_type
         seed_type_param = request.args.get('seed_type')

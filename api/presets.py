@@ -134,8 +134,8 @@ def create_user_preset():
         return jsonify({"error": "Unauthorized", "details": "Token missing sub claim"}), 401
         
     data = request.get_json(silent=True)
-    if not data:
-        return jsonify({"error": "Bad Request", "details": "Missing JSON request body"}), 400
+    if not isinstance(data, dict):
+        return jsonify({"error": "Bad Request", "details": "Request body must be a JSON object"}), 400
         
     name = data.get('name')
     description = data.get('description')
@@ -156,7 +156,7 @@ def create_user_preset():
     # Check if this user already has a preset with the same name (case-insensitive)
     existing_query = db.collection('presets')\
                        .where('creator_id', '==', discord_id)\
-                       .where('name', '==', name.strip())\
+                       .where('preset_name_lower', '==', name.strip().lower())\
                        .limit(1).stream()
                        
     if list(existing_query):
@@ -273,8 +273,8 @@ def update_user_preset():
     is_admin = payload.get('isAdmin', False) or payload.get('is_admin', False) or payload.get('isSuperadmin', False)
     
     data = request.get_json(silent=True)
-    if not data:
-        return jsonify({"error": "Bad Request", "details": "Missing JSON request body"}), 400
+    if not isinstance(data, dict):
+        return jsonify({"error": "Bad Request", "details": "Request body must be a JSON object"}), 400
         
     preset_id = data.get('id')
     name = data.get('name') or data.get('presetName')
