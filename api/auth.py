@@ -57,7 +57,7 @@ def login():
     
     # Secure Cookie Configuration:
     # Disable secure=True only during local testing to support non-HTTPS environments
-    is_secure = not DISCORD_REDIRECT_URI.startswith("http://localhost")
+    is_secure = DISCORD_REDIRECT_URI.startswith("https://")
     response.set_cookie(
         'oauth_state',
         state,
@@ -119,7 +119,13 @@ def callback():
         logger.error(f"[AUTH ERROR] Discord token exchange failed: {token_response.text}")
         return jsonify({"error": "Failed to exchange token with Discord", "details": token_response.text}), 400
         
-    access_token = token_response.json().get('access_token')
+    try:
+        token_json = token_response.json()
+    except Exception as e:
+        logger.error(f"[AUTH ERROR] Failed to parse token response JSON: {e}")
+        return jsonify({"error": "Invalid response from Discord token service"}), 502
+        
+    access_token = token_json.get('access_token')
     if not access_token:
         logger.error("[AUTH ERROR] Discord token response did not contain access_token.")
         return jsonify({"error": "Failed to retrieve access token from Discord"}), 400
@@ -140,7 +146,11 @@ def callback():
         logger.error(f"[AUTH ERROR] Discord profile request failed: {user_response.text}")
         return jsonify({"error": "Failed to fetch user profile from Discord"}), 400
         
-    discord_user = user_response.json()
+    try:
+        discord_user = user_response.json()
+    except Exception as e:
+        logger.error(f"[AUTH ERROR] Failed to parse user profile JSON: {e}")
+        return jsonify({"error": "Invalid response from Discord user service"}), 502
 
     # SECURITY DEFENSE: Null Value Trap
     # Always verify that Discord returned a valid user ID string before signing the JWT.
