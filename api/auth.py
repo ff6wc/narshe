@@ -6,6 +6,8 @@ import requests
 import jwt
 import re
 import urllib.parse
+import json
+import base64
 from flask import Blueprint, request, redirect, jsonify
 
 # Set up logging for environment diagnostics
@@ -60,7 +62,7 @@ def login():
         ]
         if ULTIMA_FRONTEND_URL:
             parsed_ultima = urllib.parse.urlparse(ULTIMA_FRONTEND_URL)
-            allowed_patterns.append(re.escape(f"{parsed_ultima.scheme}://{parsed_ultima.netloc}".lower()))
+            allowed_patterns.append(f"^{re.escape(f'{parsed_ultima.scheme}://{parsed_ultima.netloc}'.lower())}$")
         if not any(re.match(pat, origin_normalized) for pat in allowed_patterns):
             origin = ULTIMA_FRONTEND_URL or "https://ff6worldscollide.com"
     except Exception:
@@ -123,8 +125,6 @@ def callback():
         }), 403
 
     # Recover the origin from state parameter
-    import json
-    import base64
     origin = ULTIMA_FRONTEND_URL or "https://ff6worldscollide.com"
     if state_param:
         try:
@@ -145,7 +145,7 @@ def callback():
         ]
         if ULTIMA_FRONTEND_URL:
             parsed_ultima = urllib.parse.urlparse(ULTIMA_FRONTEND_URL)
-            allowed_patterns.append(re.escape(f"{parsed_ultima.scheme}://{parsed_ultima.netloc}".lower()))
+            allowed_patterns.append(f"^{re.escape(f'{parsed_ultima.scheme}://{parsed_ultima.netloc}'.lower())}$")
         if not any(re.match(pat, origin_normalized) for pat in allowed_patterns):
             origin = ULTIMA_FRONTEND_URL or "https://ff6worldscollide.com"
     except Exception:
