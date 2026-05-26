@@ -170,25 +170,13 @@ def get_seedlist():
     """
     Fetches the seedlist records from Firestore for reporting.
     Supports filtering by creator_id and seed_type.
-    Uses native order_by and limit on the query object for performance and cost efficiency.
     """
     try:
         db = get_db()
         seedlist_ref = db.collection(SEEDLIST)
-        query = seedlist_ref
         
-        # Filtering by creator_id
-        creator_id_param = request.args.get('creator_id')
-        if creator_id_param is not None:
-            query = query.where('creator_id', '==', str(creator_id_param))
-                
         # Filtering by seed_type
         seed_type_param = request.args.get('seed_type')
-        if seed_type_param:
-            query = query.where('seed_type', '==', seed_type_param.strip())
-            
-        # Native sort by timestamp descending
-        query = query.order_by('timestamp', direction=firestore.Query.DESCENDING)
         
         # Apply limit parameter
         limit_val = 100
@@ -198,10 +186,50 @@ def get_seedlist():
                 limit_val = min(int(limit_param), 1000)
             except ValueError:
                 return jsonify({"error": "Bad Request", "details": "limit must be an integer"}), 400
-                
-        query = query.limit(limit_val)
+
+        creator_id_param = request.args.get('creator_id')
         
-        docs = query.stream()
+        if creator_id_param is not None:
+            creator_id_str = str(creator_id_param)
+            
+            # 1. Fetch by string creator_id
+            query_str = seedlist_ref.where('creator_id', '==', creator_id_str)
+            if seed_type_param:
+                query_str = query_str.where('seed_type', '==', seed_type_param.strip())
+            query_str = query_str.order_by('timestamp', direction=firestore.Query.DESCENDING).limit(limit_val)
+            docs_str = list(query_str.stream())
+            
+            # 2. Fetch by integer creator_id (if convertible)
+            docs_int = []
+            try:
+                creator_id_int = int(creator_id_param)
+                query_int = seedlist_ref.where('creator_id', '==', creator_id_int)
+                if seed_type_param:
+                    query_int = query_int.where('seed_type', '==', seed_type_param.strip())
+                query_int = query_int.order_by('timestamp', direction=firestore.Query.DESCENDING).limit(limit_val)
+                docs_int = list(query_int.stream())
+            except ValueError:
+                pass
+                
+            # Merge and deduplicate by document ID
+            merged_docs = {}
+            for doc in docs_str + docs_int:
+                merged_docs[doc.id] = doc
+                
+            # Sort by timestamp DESC
+            sorted_docs = sorted(
+                merged_docs.values(),
+                key=lambda x: x.to_dict().get('timestamp', ''),
+                reverse=True
+            )
+            docs = sorted_docs[:limit_val]
+        else:
+            query = seedlist_ref
+            if seed_type_param:
+                query = query.where('seed_type', '==', seed_type_param.strip())
+            query = query.order_by('timestamp', direction=firestore.Query.DESCENDING).limit(limit_val)
+            docs = list(query.stream())
+            
         output = []
         for doc in docs:
             output.append(doc.to_dict())
