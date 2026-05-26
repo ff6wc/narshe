@@ -303,29 +303,89 @@ def update_user_preset():
         doc_ref = db.collection('presets').document(preset_id)
         doc = doc_ref.get()
         if not doc.exists:
-            return jsonify({"error": "Not Found", "details": f"Preset with id '{preset_id}' not found"}), 404
+            # Fallback: Check if preset_id is actually a preset name or name string
+            presets_ref = db.collection('presets')
+            query = presets_ref.where('preset_name_lower', '==', preset_id.strip().lower()).limit(1).stream()
+            docs = list(query)
+            if not docs:
+                query = presets_ref.where('name', '==', preset_id.strip()).limit(1).stream()
+                docs = list(query)
+            if not docs:
+                query = presets_ref.where('preset_name', '==', preset_id.strip()).limit(1).stream()
+                docs = list(query)
+                
+            if not docs:
+                return jsonify({"error": "Not Found", "details": f"Preset with id/name '{preset_id}' not found"}), 404
+            
+            doc_ref = docs[0].reference
+            doc = docs[0]
+            preset_data = doc.to_dict()
+        else:
+            preset_data = doc.to_dict()
     elif name:
         presets_ref = db.collection('presets')
         # Search by name. If not admin, restrict search to the user's own presets
         if is_admin:
-            query = presets_ref.where('name', '==', name.strip()).limit(1).stream()
+            query = presets_ref.where('preset_name_lower', '==', name.strip().lower()).limit(1).stream()
+            docs = list(query)
+            if not docs:
+                query = presets_ref.where('name', '==', name.strip()).limit(1).stream()
+                docs = list(query)
+            if not docs:
+                query = presets_ref.where('preset_name', '==', name.strip()).limit(1).stream()
+                docs = list(query)
         else:
-            query = presets_ref.where('name', '==', name.strip()).where('creator_id', '==', discord_id).limit(1).stream()
+            query = presets_ref.where('preset_name_lower', '==', name.strip().lower()).where('creator_id', '==', discord_id).limit(1).stream()
+            docs = list(query)
+            if not docs:
+                query = presets_ref.where('name', '==', name.strip()).where('creator_id', '==', discord_id).limit(1).stream()
+                docs = list(query)
+            if not docs:
+                query = presets_ref.where('preset_name', '==', name.strip()).where('creator_id', '==', discord_id).limit(1).stream()
+                docs = list(query)
             
-        docs = list(query)
         if not docs:
             # Fallback search for public download tracking (updating download_timestamp of official or shared presets)
-            query_all = presets_ref.where('name', '==', name.strip()).limit(1).stream()
+            query_all = presets_ref.where('preset_name_lower', '==', name.strip().lower()).limit(1).stream()
             docs = list(query_all)
             if not docs:
-                return jsonify({"error": "Not Found", "details": f"Preset '{name}' not found"}), 404
-        
-        doc_ref = docs[0].reference
-        doc = docs[0]
+                query_all = presets_ref.where('name', '==', name.strip()).limit(1).stream()
+                docs = list(query_all)
+            if not docs:
+                query_all = presets_ref.where('preset_name', '==', name.strip()).limit(1).stream()
+                docs = list(query_all)
+                
+            if not docs:
+                if is_admin:
+                    doc_ref = db.collection('presets').document()
+                    created_at = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S.%f")
+                    preset_data = {
+                        'id': doc_ref.id,
+                        'name': name.strip(),
+                        'preset_name': name.strip(),
+                        'preset_name_lower': name.strip().lower(),
+                        'description': description.strip() if description else '',
+                        'flags': flags.strip() if flags else '',
+                        'official': False,
+                        'creator_id': 'override',
+                        'creator_name': 'override',
+                        'tags': [],
+                        'created_at': created_at
+                    }
+                    doc_ref.set(preset_data)
+                else:
+                    return jsonify({"error": "Not Found", "details": f"Preset '{name}' not found"}), 404
+            else:
+                doc_ref = docs[0].reference
+                doc = docs[0]
+                preset_data = doc.to_dict()
+        else:
+            doc_ref = docs[0].reference
+            doc = docs[0]
+            preset_data = doc.to_dict()
     else:
         return jsonify({"error": "Bad Request", "details": "Must provide 'id' or 'name'/'presetName' to identify preset"}), 400
         
-    preset_data = doc.to_dict()
     creator_id = preset_data.get('creator_id')
     
     # 2. Check permissions: owner can edit, admins can edit, or anyone can track a download
