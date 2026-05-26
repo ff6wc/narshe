@@ -211,28 +211,25 @@ def get_seedlist():
             except ValueError:
                 pass
                 
-            # Merge and deduplicate by document ID
+            # Merge, deduplicate, and pre-convert to dict to avoid redundant deserialization
             merged_docs = {}
             for doc in docs_str + docs_int:
-                merged_docs[doc.id] = doc
+                if doc.id not in merged_docs:
+                    merged_docs[doc.id] = doc.to_dict()
                 
             # Sort by timestamp DESC
-            sorted_docs = sorted(
+            sorted_outputs = sorted(
                 merged_docs.values(),
-                key=lambda x: x.to_dict().get('timestamp', ''),
+                key=lambda x: x.get('timestamp', ''),
                 reverse=True
             )
-            docs = sorted_docs[:limit_val]
+            output = sorted_outputs[:limit_val]
         else:
             query = seedlist_ref
             if seed_type_param:
                 query = query.where('seed_type', '==', seed_type_param.strip())
             query = query.order_by('timestamp', direction=firestore.Query.DESCENDING).limit(limit_val)
-            docs = list(query.stream())
-            
-        output = []
-        for doc in docs:
-            output.append(doc.to_dict())
+            output = [doc.to_dict() for doc in query.stream()]
             
         return jsonify(output), 200
     except Exception as e:
