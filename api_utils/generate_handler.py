@@ -119,8 +119,9 @@ class GenerateHandler():
         #  self._apply_beta_changes(out_filename, wc_filename)
         patch_filename = dir + "/patch.xdelta3"
         try:
-          # Run native xdelta3 CLI to generate the patch
-          subprocess.run(["xdelta3", "-e", "-s", in_filename, wc_filename, patch_filename], check=True)
+          # Run native xdelta3 CLI to generate the patch, disabling secondary compression
+          # to ensure compatibility with JavaScript-based web decoders.
+          subprocess.run(["xdelta3", "-e", "-S", "none", "-s", in_filename, wc_filename, patch_filename], check=True)
         except subprocess.CalledProcessError as e:
           logging.error(f"xdelta3 command failed with exit code {e.returncode}")
           return Response (
