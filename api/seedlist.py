@@ -4,6 +4,7 @@ from datetime import datetime, timezone
 import jwt
 from flask import Blueprint, request, jsonify
 from google.cloud import firestore
+from google.cloud.firestore import FieldFilter
 from api_utils.collections import SEEDLIST
 
 # Set up logging
@@ -180,12 +181,12 @@ def get_seedlist():
         # Filtering by creator_id
         creator_id_param = request.args.get('creator_id')
         if creator_id_param is not None:
-            query = query.where('creator_id', '==', str(creator_id_param))
+            query = query.filter(filter=FieldFilter('creator_id', '==', str(creator_id_param)))
                 
         # Filtering by seed_type
         seed_type_param = request.args.get('seed_type')
         if seed_type_param:
-            query = query.where('seed_type', '==', seed_type_param.strip())
+            query = query.filter(filter=FieldFilter('seed_type', '==', seed_type_param.strip()))
             
         # Native sort by timestamp descending
         query = query.order_by('timestamp', direction=firestore.Query.DESCENDING)
