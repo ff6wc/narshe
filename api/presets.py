@@ -4,6 +4,7 @@ from datetime import datetime, timezone
 import jwt
 from flask import Blueprint, request, jsonify
 from google.cloud import firestore
+from google.cloud.firestore import FieldFilter
 
 # Set up logging
 logger = logging.getLogger(__name__)
@@ -80,7 +81,10 @@ def get_official_presets():
     """
     try:
         presets_ref = get_db().collection('presets')
-        query = presets_ref.where('official', '==', True).stream()
+        query = (
+            presets_ref.filter(filter=FieldFilter('official', '==', True))
+            .stream()
+        )
 
         output = []
         for doc in query:
@@ -118,7 +122,12 @@ def get_user_presets():
         if is_admin and request.args.get('all') == 'true':
             query = presets_ref.stream()
         else:
-            query = presets_ref.where('creator_id', '==', discord_id).stream()
+            query = (
+                presets_ref.filter(
+                    filter=FieldFilter('creator_id', '==', discord_id)
+                )
+                .stream()
+            )
         
         output = []
         for doc in query:
@@ -167,10 +176,19 @@ def create_user_preset():
     db = get_db()
     
     # Check if this user already has a preset with the same name (case-insensitive)
-    existing_query = db.collection('presets')\
-                       .where('creator_id', '==', discord_id)\
-                       .where('preset_name_lower', '==', name.strip().lower())\
-                       .limit(1).stream()
+    existing_query = (
+        db.collection('presets')
+        .filter(filter=FieldFilter('creator_id', '==', discord_id))
+        .filter(
+            filter=FieldFilter(
+                'preset_name_lower',
+                '==',
+                name.strip().lower(),
+            )
+        )
+        .limit(1)
+        .stream()
+    )
                        
     if list(existing_query):
         return jsonify({
@@ -333,24 +351,34 @@ def update_user_preset():
 
         presets_ref = db.collection('presets')
         # Search by name. If not admin, restrict search to the user's own presets
-        docs = []
-        for field in ['preset_name_lower', 'name', 'preset_name']:
-            val = name.strip().lower() if field == 'preset_name_lower' else name.strip()
-            query = presets_ref.where(field, '==', val)
-            if not is_admin:
-                query = query.where('creator_id', '==', discord_id)
-            docs = list(query.limit(1).stream())
-            if docs:
-                break
+        if is_admin:
+            query = (
+                presets_ref.filter(
+                    filter=FieldFilter('name', '==', name.strip())
+                )
+                .limit(1)
+                .stream()
+            )
+        else:
+            query = (
+                presets_ref.filter(
+                    filter=FieldFilter('name', '==', name.strip())
+                )
+                .filter(filter=FieldFilter('creator_id', '==', discord_id))
+                .limit(1)
+                .stream()
+            )
             
         if not docs:
             # Fallback search for public download tracking (updating download_timestamp of official or shared presets)
-            for field in ['preset_name_lower', 'name', 'preset_name']:
-                val = name.strip().lower() if field == 'preset_name_lower' else name.strip()
-                docs = list(presets_ref.where(field, '==', val).limit(1).stream())
-                if docs:
-                    break
-                
+            query_all = (
+                presets_ref.filter(
+                    filter=FieldFilter('name', '==', name.strip())
+                )
+                .limit(1)
+                .stream()
+            )
+            docs = list(query_all)
             if not docs:
                 if is_admin:
                     doc_ref = db.collection('presets').document()
@@ -508,7 +536,12 @@ def rename_tag():
 
         # 2. Query and update all presets containing the old tag
         presets_ref = db.collection('presets')
-        query = presets_ref.where('tags', 'array_contains', old_tag).stream()
+        query = (
+            presets_ref.filter(
+                filter=FieldFilter('tags', 'array_contains', old_tag)
+            )
+            .stream()
+        )
         for doc in query:
             preset_data = doc.to_dict()
             current_tags = preset_data.get('tags', [])
@@ -560,7 +593,12 @@ def delete_tag():
 
         # 2. Query and update all presets containing the tag
         presets_ref = db.collection('presets')
-        query = presets_ref.where('tags', 'array_contains', tag_to_delete).stream()
+        query = (
+            presets_ref.filter(
+                filter=FieldFilter('tags', 'array_contains', tag_to_delete)
+            )
+            .stream()
+        )
         for doc in query:
             preset_data = doc.to_dict()
             current_tags = preset_data.get('tags', [])
