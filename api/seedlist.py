@@ -171,12 +171,10 @@ def get_seedlist():
     """
     Fetches the seedlist records from Firestore for reporting.
     Supports filtering by creator_id and seed_type.
-    Uses native order_by and limit on the query object for performance and cost efficiency.
     """
     try:
         db = get_db()
         seedlist_ref = db.collection(SEEDLIST)
-        query = seedlist_ref
         
         # Filtering by creator_id
         creator_id_param = request.args.get('creator_id')
@@ -203,15 +201,84 @@ def get_seedlist():
                 limit_val = min(int(limit_param), 1000)
             except ValueError:
                 return jsonify({"error": "Bad Request", "details": "limit must be an integer"}), 400
-                
-        query = query.limit(limit_val)
+
+        creator_id_param = request.args.get('creator_id')
         
-        docs = query.stream()
-        output = []
-        for doc in docs:
-            output.append(doc.to_dict())
+        if creator_id_param is not None:
+            creator_id_str = str(creator_id_param)
+            
+            # 1. Fetch by string creator_id
+            query_str = seedlist_ref.where('creator_id', '==', creator_id_str)
+            if seed_type_param:
+                query_str = query_str.where('seed_type', '==', seed_type_param.strip())
+            query_str = query_str.order_by('timestamp', direction=firestore.Query.DESCENDING).limit(limit_val)
+            docs_str = list(query_str.stream())
+            
+            # 2. Fetch by integer creator_id (if convertible)
+            docs_int = []
+            try:
+                creator_id_int = int(creator_id_param)
+                query_int = seedlist_ref.where('creator_id', '==', creator_id_int)
+                if seed_type_param:
+                    query_int = query_int.where('seed_type', '==', seed_type_param.strip())
+                query_int = query_int.order_by('timestamp', direction=firestore.Query.DESCENDING).limit(limit_val)
+                docs_int = list(query_int.stream())
+            except ValueError:
+                pass
+                
+            # Merge, deduplicate, and pre-convert to dict to avoid redundant deserialization
+            merged_docs = {}
+            for doc in docs_str + docs_int:
+                if doc.id not in merged_docs:
+                    merged_docs[doc.id] = doc.to_dict()
+                
+            # Sort by timestamp DESC
+            sorted_outputs = sorted(
+                merged_docs.values(),
+                key=lambda x: x.get('timestamp', ''),
+                reverse=True
+            )
+            output = sorted_outputs[:limit_val]
+        else:
+            query = seedlist_ref
+            if seed_type_param:
+                query = query.where('seed_type', '==', seed_type_param.strip())
+            query = query.order_by('timestamp', direction=firestore.Query.DESCENDING).limit(limit_val)
+            output = [doc.to_dict() for doc in query.stream()]
             
         return jsonify(output), 200
     except Exception as e:
         logger.exception(f"[SEEDLIST ERROR] Failed to fetch seedlist: {e}")
         return jsonify({"error": "Internal Server Error", "details": str(e)}), 500
+
+
+@bp.route('/seedlist/count', methods=['GET'])
+@bp.route('/api/v1/seedlist/count', methods=['GET'])
+def get_seedlist_count():
+    """
+    Returns the total number of seeds rolled by a given creator_id.
+    Uses Firestore's count() aggregation query for maximum efficiency,
+    safely handling string and integer (int64) type representations of creator_id.
+    """
+    try:
+        creator_id_param = request.args.get('creator_id')
+        if not creator_id_param:
+            return jsonify({"error": "Bad Request", "details": "Missing 'creator_id' parameter"}), 400
+            
+        db = get_db()
+        seedlist_ref = db.collection(SEEDLIST)
+        
+        creator_ids = [str(creator_id_param)]
+        try:
+            creator_ids.append(int(creator_id_param))
+        except ValueError:
+            pass
+            
+        query = seedlist_ref.where('creator_id', 'in', creator_ids)
+        total_count = query.count().get()[0][0].value
+        
+        return jsonify({"count": total_count}), 200
+    except Exception as e:
+        logger.exception(f"[SEEDLIST ERROR] Failed to fetch seedlist count: {e}")
+        return jsonify({"error": "Internal Server Error", "details": str(e)}), 500
+
