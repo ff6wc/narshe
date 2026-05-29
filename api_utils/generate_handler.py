@@ -3,7 +3,6 @@ from api_utils.get_seed_payload import get_seed_payload
 from api_utils.get_seed_url import get_seed_url
 from api_utils.create_seed import create_seed
 
-import xdelta3
 import json
 import os
 import shutil
@@ -105,7 +104,10 @@ class GenerateHandler():
 
       if result:
         return Response (
-          response = json.dumps({}).encode(),
+          response = json.dumps({
+            'errors': ['Seed generation failed. See server logs for details.'],
+            'success': False
+          }).encode(),
           status = 400,
           mimetype='application/json',
         )
@@ -115,8 +117,24 @@ class GenerateHandler():
         #  wc_filename = dir + f"/{base_filename}-beta.smc"
         #  logging.debug(out_filename, wc_filename)
         #  self._apply_beta_changes(out_filename, wc_filename)
-        with open(in_filename, "rb") as old, open(wc_filename, "rb") as new, open(log_filename, "rb") as logfile, open(manifest_filename, "rb") as manifestfile:
-          raw_patch = xdelta3.encode(old.read(), new.read())
+        patch_filename = dir + "/patch.xdelta3"
+        try:
+          # Run native xdelta3 CLI to generate the patch, disabling secondary compression
+          # to ensure compatibility with JavaScript-based web decoders.
+          subprocess.run(["xdelta3", "-e", "-S", "none", "-s", in_filename, wc_filename, patch_filename], check=True)
+        except subprocess.CalledProcessError as e:
+          logging.error(f"xdelta3 command failed with exit code {e.returncode}")
+          return Response (
+            response = json.dumps({
+              'errors': ['Delta patch generation failed. See server logs for details.'],
+              'success': False
+            }).encode(),
+            status = 500,
+            mimetype='application/json',
+          )
+
+        with open(patch_filename, "rb") as patchfile, open(log_filename, "rb") as logfile, open(manifest_filename, "rb") as manifestfile:
+          raw_patch = patchfile.read()
 
           log_bytes = logfile.read()
           log = log_bytes.decode('utf-8')
@@ -183,6 +201,14 @@ class GenerateHandler():
     executable = cwd + "/wc.py"
 
     args = ['python', executable, '-i', in_filename, '-o', out_filename, '-manifest', manifest_filename] + flags.split()
-    logging.debug(f'running command {args}')
+    logging.info(f'running command {args}')
 
-    return subprocess.Popen(args, cwd = cwd).wait()
+    proc = subprocess.Popen(args, cwd=cwd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    stdout, stderr = proc.communicate()
+
+    if proc.returncode != 0:
+      logging.error(f"WorldsCollide failed with return code {proc.returncode}")
+      logging.error(f"STDOUT: {stdout.decode('utf-8', errors='replace')}")
+      logging.error(f"STDERR: {stderr.decode('utf-8', errors='replace')}")
+
+    return proc.returncode

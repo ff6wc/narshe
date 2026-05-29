@@ -1,6 +1,6 @@
 Flask implementation of the ff6worldscollide.com balance-and-ruin API (ref: https://github.com/kielbasiago/ultima/tree/main/apps/balance-and-ruin/api)
 
-Tested with python 3.9.6
+Tested with python 3.12
 
 Running requires several environment variables in a .env file. This includes these values:
 ```

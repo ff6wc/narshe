@@ -1,9 +1,8 @@
 # Use the official lightweight Python image.
 # https://hub.docker.com/_/python
-FROM python:3.9-slim AS compile-image
+FROM python:3.12-slim AS compile-image
 
-RUN echo 'deb http://deb.debian.org/debian testing main' >> /etc/apt/sources.list \
-    && apt-get update && apt-get install -y --no-install-recommends -o APT::Immediate-Configure=false gcc python3-dev
+RUN apt-get update && apt-get install -y --no-install-recommends gcc python3-dev
 
 RUN python -m venv /opt/venv
 
@@ -14,24 +13,24 @@ COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
 # per pythonspeed.com, we'll now get the pre-built artifacts only
-FROM python:3.9-slim AS build-image
+FROM python:3.12-slim AS build-image
 COPY --from=compile-image /opt/venv /opt/venv
 
 # Copy local code to the container image.
-ENV APP_HOME /app
+ENV APP_HOME=/app
 WORKDIR $APP_HOME
 COPY . ./
 
 # ---> INJECTED FIX START <---
-# Install git, clear the empty submodule placeholder, and force-clone the DEV engine
-RUN apt-get update && apt-get install -y git
+# Install git and xdelta3, clear the empty submodule placeholder, and force-clone the DEV engine
+RUN apt-get update && apt-get install -y git xdelta3
 RUN rm -rf WorldsCollide && git clone -b dev https://github.com/ff6wc/WorldsCollide.git WorldsCollide
 # ---> INJECTED FIX END <---
 
 ENV PATH="/opt/venv/bin:$PATH"
 
 # Allow statements and log messages to immediately appear in the logs
-ENV PYTHONUNBUFFERED True
+ENV PYTHONUNBUFFERED=True
 # Run the web service on container startup. Here we use the gunicorn
 # webserver, with one worker process and 8 threads.
 # For environments with multiple CPU cores, increase the number of workers

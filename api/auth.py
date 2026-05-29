@@ -4,6 +4,10 @@ import logging
 import secrets
 import requests
 import jwt
+import re
+import urllib.parse
+import json
+import base64
 from flask import Blueprint, request, redirect, jsonify
 
 # Set up logging for environment diagnostics
@@ -33,6 +37,9 @@ if missing_vars:
 
 @bp.route('/login', methods=['GET'])
 def login():
+    import json
+    import base64
+
     # Defensive check to ensure we can build the redirect URL
     if not DISCORD_CLIENT_ID or not DISCORD_REDIRECT_URI:
         logger.error("[AUTH ERROR] Cannot initiate login. DISCORD_CLIENT_ID or DISCORD_REDIRECT_URI is not configured.")
@@ -41,8 +48,35 @@ def login():
             "details": "Discord client ID or redirect URI is missing."
         }), 500
 
-    # CSRF Protection: Generate a unique, cryptographically strong random state string
-    state = secrets.token_urlsafe(32)
+    origin = request.args.get('origin') or ULTIMA_FRONTEND_URL or "https://ff6worldscollide.com"
+
+    # Validate origin to prevent Open Redirect vulnerabilities
+    try:
+        parsed_origin = urllib.parse.urlparse(origin)
+        origin_normalized = f"{parsed_origin.scheme}://{parsed_origin.netloc}".lower()
+        allowed_patterns = [
+            r"^https://ff6worldscollide\.com$",
+            r"^https://dev\.ff6worldscollide\.com$",
+            r"^https://[a-zA-Z0-9-]+\.pages\.dev$",
+            r"^http://localhost:(3000|8000)$"
+        ]
+        if ULTIMA_FRONTEND_URL:
+            parsed_ultima = urllib.parse.urlparse(ULTIMA_FRONTEND_URL)
+            allowed_patterns.append(f"^{re.escape(f'{parsed_ultima.scheme}://{parsed_ultima.netloc}'.lower())}$")
+        if not any(re.match(pat, origin_normalized) for pat in allowed_patterns):
+            origin = ULTIMA_FRONTEND_URL or "https://ff6worldscollide.com"
+    except Exception:
+        origin = ULTIMA_FRONTEND_URL or "https://ff6worldscollide.com"
+
+    # CSRF Protection: Generate a unique, cryptographically strong random token
+    csrf_token = secrets.token_urlsafe(32)
+
+    # Encode csrf_token and origin into state
+    state_payload = {
+        "csrf_token": csrf_token,
+        "origin": origin
+    }
+    state = base64.urlsafe_b64encode(json.dumps(state_payload).encode()).decode()
 
     discord_auth_url = (
         f"{DISCORD_API_BASE}/oauth2/authorize"
@@ -57,7 +91,7 @@ def login():
     
     # Secure Cookie Configuration:
     # Disable secure=True only during local testing to support non-HTTPS environments
-    is_secure = not DISCORD_REDIRECT_URI.startswith("http://localhost")
+    is_secure = DISCORD_REDIRECT_URI.startswith("https://")
     response.set_cookie(
         'oauth_state',
         state,
@@ -90,6 +124,33 @@ def callback():
             "details": "CSRF validation failed: State parameter mismatch or missing."
         }), 403
 
+    # Recover the origin from state parameter
+    origin = ULTIMA_FRONTEND_URL or "https://ff6worldscollide.com"
+    if state_param:
+        try:
+            state_payload = json.loads(base64.urlsafe_b64decode(state_param.encode()).decode())
+            origin = state_payload.get('origin', origin)
+        except Exception as e:
+            logger.error(f"[AUTH ERROR] Failed to decode state parameter: {e}")
+
+    # Validate origin to prevent Open Redirect vulnerabilities
+    try:
+        parsed_origin = urllib.parse.urlparse(origin)
+        origin_normalized = f"{parsed_origin.scheme}://{parsed_origin.netloc}".lower()
+        allowed_patterns = [
+            r"^https://ff6worldscollide\.com$",
+            r"^https://dev\.ff6worldscollide\.com$",
+            r"^https://[a-zA-Z0-9-]+\.pages\.dev$",
+            r"^http://localhost:(3000|8000)$"
+        ]
+        if ULTIMA_FRONTEND_URL:
+            parsed_ultima = urllib.parse.urlparse(ULTIMA_FRONTEND_URL)
+            allowed_patterns.append(f"^{re.escape(f'{parsed_ultima.scheme}://{parsed_ultima.netloc}'.lower())}$")
+        if not any(re.match(pat, origin_normalized) for pat in allowed_patterns):
+            origin = ULTIMA_FRONTEND_URL or "https://ff6worldscollide.com"
+    except Exception:
+        origin = ULTIMA_FRONTEND_URL or "https://ff6worldscollide.com"
+
     code = request.args.get('code')
     if not code:
         return jsonify({"error": "Missing authorization code"}), 400
@@ -119,7 +180,13 @@ def callback():
         logger.error(f"[AUTH ERROR] Discord token exchange failed: {token_response.text}")
         return jsonify({"error": "Failed to exchange token with Discord", "details": token_response.text}), 400
         
-    access_token = token_response.json().get('access_token')
+    try:
+        token_json = token_response.json()
+    except Exception as e:
+        logger.error(f"[AUTH ERROR] Failed to parse token response JSON: {e}")
+        return jsonify({"error": "Invalid response from Discord token service"}), 502
+        
+    access_token = token_json.get('access_token')
     if not access_token:
         logger.error("[AUTH ERROR] Discord token response did not contain access_token.")
         return jsonify({"error": "Failed to retrieve access token from Discord"}), 400
@@ -140,7 +207,11 @@ def callback():
         logger.error(f"[AUTH ERROR] Discord profile request failed: {user_response.text}")
         return jsonify({"error": "Failed to fetch user profile from Discord"}), 400
         
-    discord_user = user_response.json()
+    try:
+        discord_user = user_response.json()
+    except Exception as e:
+        logger.error(f"[AUTH ERROR] Failed to parse user profile JSON: {e}")
+        return jsonify({"error": "Invalid response from Discord user service"}), 502
 
     # SECURITY DEFENSE: Null Value Trap
     # Always verify that Discord returned a valid user ID string before signing the JWT.
@@ -150,10 +221,14 @@ def callback():
 
     # 3. Construct JWT Session Token for Ultima
     # Set expiration to 7 days in the future
+    admin_ids = [admin_id.strip() for admin_id in os.environ.get('ADMIN_DISCORD_IDS', '').split(',') if admin_id.strip()]
+    is_admin = str(discord_user['id']) in admin_ids
+
     payload = {
         'sub': str(discord_user['id']),
         'username': discord_user.get('username'),
         'avatar': discord_user.get('avatar'),
+        'isAdmin': is_admin,
         'exp': int(time.time()) + (7 * 24 * 60 * 60)
     }
 
@@ -163,9 +238,10 @@ def callback():
         logger.error(f"[AUTH ERROR] JWT signing failed: {e}")
         return jsonify({"error": "Failed to generate session token"}), 500
 
-    # 4. Redirect the Client back to Ultima Frontend using a URL fragment (#token=)
-    # This prevents the JWT from leaking in server logs or Referer headers.
-    target_url = f"{ULTIMA_FRONTEND_URL}/login-success#token={session_token}"
+    # 4. Redirect the Client back to the dynamic origin using a URL fragment (#token=)
+    # This prevents the JWT from leaking in server logs or Referer headers,
+    # and preserves backward-compatibility with the existing frontend token parser.
+    target_url = f"{origin}/login-success#token={session_token}"
     response = redirect(target_url)
     
     # Clean up the state cookie after a successful login flow completes

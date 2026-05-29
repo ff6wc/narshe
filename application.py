@@ -16,12 +16,14 @@ import api.sprite
 import api.sprites
 import api.wc
 import api.auth
+import api.presets
+import api.seedlist
 
 application = Flask(__name__)
 CORS(application, origins=[
     "https://ff6worldscollide.com", "https://dev.ff6worldscollide.com",
-    re.compile(r"^https://.*ff6worldscollide\.pages\.dev$"),
-    "http://localhost:3000"
+    re.compile(r"^https://.*\.pages\.dev$"),
+    "http://localhost:3000", "http://localhost:8000"
 ])
 
 @application.route("/", methods=["GET"])
@@ -29,11 +31,6 @@ def hello_world():
     import os
     return f"<p>{os.getenv('HELLO_TEXT')}</p>"
 
-# seedbot proxies (to avoid CORS errors)
-@application.route("/presets", methods=["GET"])
-def get_presets():
-    resp = requests.get("https://storage.googleapis.com/seedbot/user_presets.json", stream=True)
-    return (resp.raw.read(), resp.status_code, resp.headers.items())
 
 @application.route("/sotws", methods=["GET"])
 def get_sotws():
@@ -42,6 +39,8 @@ def get_sotws():
 
 #register the endpoints
 application.register_blueprint(api.auth.bp)
+application.register_blueprint(api.presets.bp)
+application.register_blueprint(api.seedlist.bp)
 
 application.register_blueprint(api.generate.bp)
 
