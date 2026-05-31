@@ -62,7 +62,8 @@ class GenerateHandler():
       
   def do_POST(self, request):
     try:
-      sys.path.append("WorldsCollide")
+      if "WorldsCollide" not in sys.path:
+        sys.path.append("WorldsCollide")
       with tempfile.TemporaryDirectory() as dir:
         in_filename = dir + "/ff3.smc"
         from api_utils.generate_seed import generate_seed
@@ -181,17 +182,35 @@ class GenerateHandler():
     except Exception as e:
       try:
         bad_payload = request.get_data(as_text=True)
-        logger.error(f"Generation failure inbound payload: {bad_payload}")
+        try:
+          payload_data = json.loads(bad_payload)
+          if isinstance(payload_data, dict):
+            for sensitive_key in ["key", "reCAPTCHA"]:
+              if sensitive_key in payload_data:
+                payload_data[sensitive_key] = "********"
+            logger.error(f"Generation failure inbound payload: {json.dumps(payload_data)}")
+          else:
+            logger.error("Generation failure inbound payload is not a JSON object")
+        except Exception:
+          import re
+          sanitized_payload = re.sub(r'("key"\s*:\s*")[^"]+(")', r'\1********\2', bad_payload)
+          sanitized_payload = re.sub(r'("reCAPTCHA"\s*:\s*")[^"]+(")', r'\1********\2', sanitized_payload)
+          logger.error(f"Generation failure inbound payload is not valid JSON: {sanitized_payload}")
       except Exception as log_err:
         logger.error(f"Failed to extract payload for logging: {log_err}")
         
       logger.exception("Seed generation pipeline encountered an unhandled exception.")
+      
+      status_code = 500
+      if isinstance(e, (json.JSONDecodeError, KeyError, TypeError)):
+        status_code = 400
+        
       return Response (
         response = json.dumps({
           'errors': ['Seed generation failed. See server logs for details.'],
           'success': False
         }).encode(),
-        status = 400,
+        status = status_code,
         mimetype='application/json',
       )
 
