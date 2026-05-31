@@ -13,6 +13,8 @@ import urllib.request
 import logging
 from flask import Response
 
+logger = logging.getLogger(__name__)
+
 class GenerateHandler():
   def __init__(self, include_patch, include_log, use_protocol):
     self.include_patch = include_patch
@@ -59,122 +61,139 @@ class GenerateHandler():
       return (200, None)
       
   def do_POST(self, request):
-    sys.path.append("WorldsCollide")
-    with tempfile.TemporaryDirectory() as dir:
-      in_filename = dir + "/ff3.smc"
-      from api_utils.generate_seed import generate_seed
-      seed_id = generate_seed()
-      base_filename = f"ff6wc_{seed_id}"
-      out_filename = dir + f"/{base_filename}.smc"
-      log_filename = dir + f"/{base_filename}.txt"
-      manifest_filename = dir + f"/{base_filename}.json"
-      website_url = get_seed_url(seed_id)
+    try:
+      sys.path.append("WorldsCollide")
+      with tempfile.TemporaryDirectory() as dir:
+        in_filename = dir + "/ff3.smc"
+        from api_utils.generate_seed import generate_seed
+        seed_id = generate_seed()
+        base_filename = f"ff6wc_{seed_id}"
+        out_filename = dir + f"/{base_filename}.smc"
+        log_filename = dir + f"/{base_filename}.txt"
+        manifest_filename = dir + f"/{base_filename}.json"
+        website_url = get_seed_url(seed_id)
 
-      post_data = request.data
-      data = json.loads(post_data)
+        post_data = request.data
+        data = json.loads(post_data)
 
-      protocol =  self.use_protocol
-      logging.info(f'using {protocol} validation protocol')
-      (status, error) = self.validate_api_key(data) if protocol == 'api_key' else self.validate_recaptcha(data)
-      logging.info(f"{protocol} returned with status {status}")
-      if protocol == 'api_key' and status == 403:
-        return Response(
-          response = json.dumps({
-            'errors': ['Invalid api key'],
-            'success': False
-          }).encode(),
-          status = 403,
-          mimetype='application/json'
-        )
-      elif status != 200:
-        return Response(
-          response = json.dumps({
-            'errors': [f'Validation returned with status code {status}: {error}'],
-            'success': False
-          }).encode(),
-          status = 500,
-          mimetype='application/json'
-        )
-
-      original_flags = data['flags']
-      description = data.get('description')
-      flags = original_flags +  f' -url {website_url} -manifest {manifest_filename}'
-      
-      result = self._run_worlds_collide(in_filename, out_filename, manifest_filename, flags)
-
-      if result:
-        return Response (
-          response = json.dumps({
-            'errors': ['Seed generation failed. See server logs for details.'],
-            'success': False
-          }).encode(),
-          status = 400,
-          mimetype='application/json',
-        )
-      else:
-        wc_filename = out_filename
-        #if os.getenv("NEXT_PUBLIC_ENABLE_BETA") == "true":
-        #  wc_filename = dir + f"/{base_filename}-beta.smc"
-        #  logging.debug(out_filename, wc_filename)
-        #  self._apply_beta_changes(out_filename, wc_filename)
-        patch_filename = dir + "/patch.xdelta3"
-        try:
-          # Run native xdelta3 CLI to generate the patch, disabling secondary compression
-          # to ensure compatibility with JavaScript-based web decoders.
-          subprocess.run(["xdelta3", "-e", "-S", "none", "-s", in_filename, wc_filename, patch_filename], check=True)
-        except subprocess.CalledProcessError as e:
-          logging.error(f"xdelta3 command failed with exit code {e.returncode}")
-          return Response (
+        protocol =  self.use_protocol
+        logging.info(f'using {protocol} validation protocol')
+        (status, error) = self.validate_api_key(data) if protocol == 'api_key' else self.validate_recaptcha(data)
+        logging.info(f"{protocol} returned with status {status}")
+        if protocol == 'api_key' and status == 403:
+          return Response(
             response = json.dumps({
-              'errors': ['Delta patch generation failed. See server logs for details.'],
+              'errors': ['Invalid api key'],
+              'success': False
+            }).encode(),
+            status = 403,
+            mimetype='application/json'
+          )
+        elif status != 200:
+          return Response(
+            response = json.dumps({
+              'errors': [f'Validation returned with status code {status}: {error}'],
               'success': False
             }).encode(),
             status = 500,
-            mimetype='application/json',
+            mimetype='application/json'
           )
 
-        with open(patch_filename, "rb") as patchfile, open(log_filename, "rb") as logfile, open(manifest_filename, "rb") as manifestfile:
-          raw_patch = patchfile.read()
+        original_flags = data['flags']
+        description = data.get('description')
+        flags = original_flags +  f' -url {website_url} -manifest {manifest_filename}'
+        
+        result = self._run_worlds_collide(in_filename, out_filename, manifest_filename, flags)
 
-          log_bytes = logfile.read()
-          log = log_bytes.decode('utf-8')
-          
-          import base64
-          manifest = json.loads(manifestfile.read())
-          patch = base64.b64encode(raw_patch).decode('utf-8')
-          
-          include_log = self.include_log
-          include_patch = self.include_patch
-
-          created_by = self.get_created_by(data)
-
-          raw_seed = create_seed(
-            seed_id = seed_id, 
-            patch = patch, 
-            log = log, 
-            website_url = website_url, 
-            filename = base_filename, 
-            flags = manifest['flags'], 
-            seed_type = "ff6wc", 
-            description = description,
-            version = manifest['version'],
-            hash = manifest['hash'],
-            created_by = created_by
-          )
-          
-          seed = get_seed_payload(
-            raw_seed, 
-            log if include_log else None, 
-            patch if include_patch else None,
-            website_url=get_seed_url(seed_id),
-            filename=base_filename
-          )
-
+        if result:
           return Response (
-            response = json.dumps(seed).encode(),
-            status = 200,
+            response = json.dumps({
+              'errors': ['Seed generation failed. See server logs for details.'],
+              'success': False
+            }).encode(),
+            status = 400,
             mimetype='application/json',
           )
+        else:
+          wc_filename = out_filename
+          #if os.getenv("NEXT_PUBLIC_ENABLE_BETA") == "true":
+          #  wc_filename = dir + f"/{base_filename}-beta.smc"
+          #  logging.debug(out_filename, wc_filename)
+          #  self._apply_beta_changes(out_filename, wc_filename)
+          patch_filename = dir + "/patch.xdelta3"
+          try:
+            # Run native xdelta3 CLI to generate the patch, disabling secondary compression
+            # to ensure compatibility with JavaScript-based web decoders.
+            subprocess.run(["xdelta3", "-e", "-S", "none", "-s", in_filename, wc_filename, patch_filename], check=True)
+          except subprocess.CalledProcessError as e:
+            logging.error(f"xdelta3 command failed with exit code {e.returncode}")
+            return Response (
+              response = json.dumps({
+                'errors': ['Delta patch generation failed. See server logs for details.'],
+                'success': False
+              }).encode(),
+              status = 500,
+              mimetype='application/json',
+            )
+
+          with open(patch_filename, "rb") as patchfile, open(log_filename, "rb") as logfile, open(manifest_filename, "rb") as manifestfile:
+            raw_patch = patchfile.read()
+
+            log_bytes = logfile.read()
+            log = log_bytes.decode('utf-8')
+            
+            import base64
+            manifest = json.loads(manifestfile.read())
+            patch = base64.b64encode(raw_patch).decode('utf-8')
+            
+            include_log = self.include_log
+            include_patch = self.include_patch
+
+            created_by = self.get_created_by(data)
+
+            raw_seed = create_seed(
+              seed_id = seed_id, 
+              patch = patch, 
+              log = log, 
+              website_url = website_url, 
+              filename = base_filename, 
+              flags = manifest['flags'], 
+              seed_type = "ff6wc", 
+              description = description,
+              version = manifest['version'],
+              hash = manifest['hash'],
+              created_by = created_by
+            )
+            
+            seed = get_seed_payload(
+              raw_seed, 
+              log if include_log else None, 
+              patch if include_patch else None,
+              website_url=get_seed_url(seed_id),
+              filename=base_filename
+            )
+
+            return Response (
+              response = json.dumps(seed).encode(),
+              status = 200,
+              mimetype='application/json',
+            )
+    except Exception as e:
+      try:
+        bad_payload = request.get_data(as_text=True)
+        logger.error(f"Generation failure inbound payload: {bad_payload}")
+      except Exception as log_err:
+        logger.error(f"Failed to extract payload for logging: {log_err}")
+        
+      logger.exception("Seed generation pipeline encountered an unhandled exception.")
+      return Response (
+        response = json.dumps({
+          'errors': ['Seed generation failed. See server logs for details.'],
+          'success': False
+        }).encode(),
+        status = 400,
+        mimetype='application/json',
+      )
 
   def _apply_beta_changes(self, wc_filename, new_filename):
     cwd = os.getcwd()  + "/WorldsCollideConfig"
