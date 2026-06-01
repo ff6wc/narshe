@@ -354,7 +354,7 @@ def update_user_preset():
         if is_admin:
             query = (
                 presets_ref.where(
-                    filter=FieldFilter('name', '==', name.strip())
+                    filter=FieldFilter('preset_name_lower', '==', name.strip().lower())
                 )
                 .limit(1)
                 .stream()
@@ -362,7 +362,7 @@ def update_user_preset():
         else:
             query = (
                 presets_ref.where(
-                    filter=FieldFilter('name', '==', name.strip())
+                    filter=FieldFilter('preset_name_lower', '==', name.strip().lower())
                 )
                 .where(filter=FieldFilter('creator_id', '==', discord_id))
                 .limit(1)
@@ -374,7 +374,7 @@ def update_user_preset():
             # Fallback search for public download tracking (updating download_timestamp of official or shared presets)
             query_all = (
                 presets_ref.where(
-                    filter=FieldFilter('name', '==', name.strip())
+                    filter=FieldFilter('preset_name_lower', '==', name.strip().lower())
                 )
                 .limit(1)
                 .stream()
