@@ -4,6 +4,7 @@ from datetime import datetime, timezone
 import jwt
 from flask import Blueprint, request, jsonify
 from google.cloud import firestore
+from google.cloud.firestore import FieldFilter
 from api_utils.collections import SEEDLIST
 
 # Set up logging
@@ -177,7 +178,6 @@ def get_seedlist():
         
         # Filtering by seed_type
         seed_type_param = request.args.get('seed_type')
-        
         # Apply limit parameter
         limit_val = 100
         limit_param = request.args.get('limit')
