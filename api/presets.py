@@ -368,7 +368,8 @@ def update_user_preset():
                 .limit(1)
                 .stream()
             )
-            
+        docs = list(query)
+
         if not docs:
             # Fallback search for public download tracking (updating download_timestamp of official or shared presets)
             query_all = (

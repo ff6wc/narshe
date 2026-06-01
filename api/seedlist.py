@@ -176,23 +176,8 @@ def get_seedlist():
         db = get_db()
         seedlist_ref = db.collection(SEEDLIST)
         
-        # Filtering by creator_id
-        creator_id_param = request.args.get('creator_id')
-        if creator_id_param is not None:
-            query = query.filter(
-                filter=FieldFilter('creator_id', '==', str(creator_id_param))
-            )
-                
         # Filtering by seed_type
         seed_type_param = request.args.get('seed_type')
-        if seed_type_param:
-            query = query.filter(
-                filter=FieldFilter('seed_type', '==', seed_type_param.strip())
-            )
-            
-        # Native sort by timestamp descending
-        query = query.order_by('timestamp', direction=firestore.Query.DESCENDING)
-        
         # Apply limit parameter
         limit_val = 100
         limit_param = request.args.get('limit')
