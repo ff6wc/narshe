@@ -61,6 +61,42 @@ class GenerateHandler():
       return (200, None)
       
   def do_POST(self, request):
+    # 1. Early Input Validation & Parsing (Strict Client Payload check)
+    try:
+      post_data = request.data
+      data = json.loads(post_data)
+      original_flags = data['flags']
+    except (json.JSONDecodeError, KeyError, TypeError) as e:
+      try:
+        bad_payload = request.get_data(as_text=True)
+        try:
+          payload_data = json.loads(bad_payload)
+          if isinstance(payload_data, dict):
+            for sensitive_key in ["key", "reCAPTCHA"]:
+              if sensitive_key in payload_data:
+                payload_data[sensitive_key] = "********"
+            logger.error(f"Inbound payload validation failure: {json.dumps(payload_data)}")
+          else:
+            logger.error("Inbound payload is not a JSON object")
+        except Exception:
+          import re
+          sanitized_payload = re.sub(r'("key"\s*:\s*")[^"]+(")', r'\1********\2', bad_payload)
+          sanitized_payload = re.sub(r'("reCAPTCHA"\s*:\s*")[^"]+(")', r'\1********\2', sanitized_payload)
+          logger.error(f"Inbound payload is not valid JSON: {sanitized_payload}")
+      except Exception as log_err:
+        logger.error(f"Failed to extract payload for logging: {log_err}")
+        
+      logger.exception("Seed request validation failed (invalid payload JSON or missing 'flags').")
+      return Response (
+        response = json.dumps({
+          'errors': ['Seed generation failed due to invalid request payload.'],
+          'success': False
+        }).encode(),
+        status = 400,
+        mimetype='application/json',
+      )
+
+    # 2. Main Generation Execution Pipeline
     try:
       if "WorldsCollide" not in sys.path:
         sys.path.append("WorldsCollide")
@@ -74,13 +110,10 @@ class GenerateHandler():
         manifest_filename = dir + f"/{base_filename}.json"
         website_url = get_seed_url(seed_id)
 
-        post_data = request.data
-        data = json.loads(post_data)
-
         protocol =  self.use_protocol
-        logging.info(f'using {protocol} validation protocol')
+        logger.info(f'using {protocol} validation protocol')
         (status, error) = self.validate_api_key(data) if protocol == 'api_key' else self.validate_recaptcha(data)
-        logging.info(f"{protocol} returned with status {status}")
+        logger.info(f"{protocol} returned with status {status}")
         if protocol == 'api_key' and status == 403:
           return Response(
             response = json.dumps({
@@ -100,17 +133,19 @@ class GenerateHandler():
             mimetype='application/json'
           )
 
-        original_flags = data['flags']
         description = data.get('description')
         flags = original_flags +  f' -url {website_url} -manifest {manifest_filename}'
         
-        result = self._run_worlds_collide(in_filename, out_filename, manifest_filename, flags)
+        result_code, stdout_str, stderr_str = self._run_worlds_collide(in_filename, out_filename, manifest_filename, flags)
 
-        if result:
+        if result_code != 0:
+          logger.error(f"WorldsCollide failed. Flags: {original_flags}")
           return Response (
             response = json.dumps({
               'errors': ['Seed generation failed. See server logs for details.'],
-              'success': False
+              'success': False,
+              'stderr': self._sanitize_stderr(stderr_str),
+              'flags': original_flags
             }).encode(),
             status = 400,
             mimetype='application/json',
@@ -119,7 +154,7 @@ class GenerateHandler():
           wc_filename = out_filename
           #if os.getenv("NEXT_PUBLIC_ENABLE_BETA") == "true":
           #  wc_filename = dir + f"/{base_filename}-beta.smc"
-          #  logging.debug(out_filename, wc_filename)
+          #  logger.debug(out_filename, wc_filename)
           #  self._apply_beta_changes(out_filename, wc_filename)
           patch_filename = dir + "/patch.xdelta3"
           try:
@@ -127,7 +162,7 @@ class GenerateHandler():
             # to ensure compatibility with JavaScript-based web decoders.
             subprocess.run(["xdelta3", "-e", "-S", "none", "-s", in_filename, wc_filename, patch_filename], check=True)
           except subprocess.CalledProcessError as e:
-            logging.error(f"xdelta3 command failed with exit code {e.returncode}")
+            logger.error(f"xdelta3 command failed with exit code {e.returncode}")
             return Response (
               response = json.dumps({
                 'errors': ['Delta patch generation failed. See server logs for details.'],
@@ -201,16 +236,12 @@ class GenerateHandler():
         
       logger.exception("Seed generation pipeline encountered an unhandled exception.")
       
-      status_code = 500
-      if isinstance(e, (json.JSONDecodeError, KeyError, TypeError)):
-        status_code = 400
-        
       return Response (
         response = json.dumps({
           'errors': ['Seed generation failed. See server logs for details.'],
           'success': False
         }).encode(),
-        status = status_code,
+        status = 500,
         mimetype='application/json',
       )
 
@@ -222,7 +253,7 @@ class GenerateHandler():
     red_window_arg = '252828.202222.161616.101010.050606.313131.140606'
 
     args = ['python', executable, '-i', wc_filename, '-o', new_filename, "-bs", '6', "-ms", "1", '-w1', red_window_arg]
-    logging.debug(f'running command {args}')
+    logger.debug(f'running command {args}')
 
     return subprocess.Popen(args, cwd = cwd).wait()
 
@@ -239,14 +270,34 @@ class GenerateHandler():
     executable = cwd + "/wc.py"
 
     args = ['python', executable, '-i', in_filename, '-o', out_filename, '-manifest', manifest_filename] + flags.split()
-    logging.info(f'running command {args}')
+    logger.info(f'running command {args}')
 
     proc = subprocess.Popen(args, cwd=cwd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
     stdout, stderr = proc.communicate()
 
     if proc.returncode != 0:
-      logging.error(f"WorldsCollide failed with return code {proc.returncode}")
-      logging.error(f"STDOUT: {stdout.decode('utf-8', errors='replace')}")
-      logging.error(f"STDERR: {stderr.decode('utf-8', errors='replace')}")
+      logger.error(f"WorldsCollide failed with return code {proc.returncode}")
+      logger.error(f"STDOUT: {stdout.decode('utf-8', errors='replace')}")
+      logger.error(f"STDERR: {stderr.decode('utf-8', errors='replace')}")
 
-    return proc.returncode
+    return proc.returncode, stdout.decode('utf-8', errors='replace'), stderr.decode('utf-8', errors='replace')
+
+  def _sanitize_stderr(self, stderr):
+    if not stderr:
+      return ""
+    
+    sanitized_lines = []
+    for line in stderr.splitlines():
+      line_lower = line.lower()
+      # Expose only explicit argparse errors or clean usage messages
+      if "wc.py: error:" in line or "unrecognized arguments:" in line_lower:
+        sanitized_lines.append(line.strip())
+      elif "argument" in line_lower and ("invalid" in line_lower or "expected" in line_lower):
+        sanitized_lines.append(line.strip())
+      elif "usage: wc.py" in line_lower:
+        sanitized_lines.append(line.strip())
+    
+    if sanitized_lines:
+      return "\n".join(sanitized_lines)
+    
+    return "Seed generation failed due to an error in flag processing."
