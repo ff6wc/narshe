@@ -82,7 +82,7 @@ def get_official_presets():
     try:
         presets_ref = get_db().collection('presets')
         query = (
-            presets_ref.filter(filter=FieldFilter('official', '==', True))
+            presets_ref.where(filter=FieldFilter('official', '==', True))
             .stream()
         )
 
@@ -123,7 +123,7 @@ def get_user_presets():
             query = presets_ref.stream()
         else:
             query = (
-                presets_ref.filter(
+                presets_ref.where(
                     filter=FieldFilter('creator_id', '==', discord_id)
                 )
                 .stream()
@@ -178,8 +178,8 @@ def create_user_preset():
     # Check if this user already has a preset with the same name (case-insensitive)
     existing_query = (
         db.collection('presets')
-        .filter(filter=FieldFilter('creator_id', '==', discord_id))
-        .filter(
+        .where(filter=FieldFilter('creator_id', '==', discord_id))
+        .where(
             filter=FieldFilter(
                 'preset_name_lower',
                 '==',
@@ -353,18 +353,18 @@ def update_user_preset():
         # Search by name. If not admin, restrict search to the user's own presets
         if is_admin:
             query = (
-                presets_ref.filter(
-                    filter=FieldFilter('name', '==', name.strip())
+                presets_ref.where(
+                    filter=FieldFilter('preset_name_lower', '==', name.strip().lower())
                 )
                 .limit(1)
                 .stream()
             )
         else:
             query = (
-                presets_ref.filter(
-                    filter=FieldFilter('name', '==', name.strip())
+                presets_ref.where(
+                    filter=FieldFilter('preset_name_lower', '==', name.strip().lower())
                 )
-                .filter(filter=FieldFilter('creator_id', '==', discord_id))
+                .where(filter=FieldFilter('creator_id', '==', discord_id))
                 .limit(1)
                 .stream()
             )
@@ -373,8 +373,8 @@ def update_user_preset():
         if not docs:
             # Fallback search for public download tracking (updating download_timestamp of official or shared presets)
             query_all = (
-                presets_ref.filter(
-                    filter=FieldFilter('name', '==', name.strip())
+                presets_ref.where(
+                    filter=FieldFilter('preset_name_lower', '==', name.strip().lower())
                 )
                 .limit(1)
                 .stream()
@@ -538,7 +538,7 @@ def rename_tag():
         # 2. Query and update all presets containing the old tag
         presets_ref = db.collection('presets')
         query = (
-            presets_ref.filter(
+            presets_ref.where(
                 filter=FieldFilter('tags', 'array_contains', old_tag)
             )
             .stream()
@@ -595,7 +595,7 @@ def delete_tag():
         # 2. Query and update all presets containing the tag
         presets_ref = db.collection('presets')
         query = (
-            presets_ref.filter(
+            presets_ref.where(
                 filter=FieldFilter('tags', 'array_contains', tag_to_delete)
             )
             .stream()
