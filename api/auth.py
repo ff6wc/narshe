@@ -220,7 +220,7 @@ def callback():
         return jsonify({"error": "Invalid user profile received from Discord"}), 400
 
     # 3. Construct JWT Session Token for Ultima
-    # Set expiration to 7 days in the future
+    # Set expiration to 30 days in the future
     admin_ids = [admin_id.strip() for admin_id in os.environ.get('ADMIN_DISCORD_IDS', '').split(',') if admin_id.strip()]
     is_admin = str(discord_user['id']) in admin_ids
 
@@ -229,7 +229,7 @@ def callback():
         'username': discord_user.get('username'),
         'avatar': discord_user.get('avatar'),
         'isAdmin': is_admin,
-        'exp': int(time.time()) + (7 * 24 * 60 * 60)
+        'exp': int(time.time()) + (30 * 24 * 60 * 60)
     }
 
     try:
