@@ -1,4 +1,6 @@
 import os
+import re
+import hashlib
 import logging
 from datetime import datetime, timezone
 import jwt
@@ -10,6 +12,13 @@ from google.cloud.firestore import FieldFilter
 logger = logging.getLogger(__name__)
 
 bp = Blueprint('presets', __name__)
+
+MAX_PRESET_NAME_LEN = 120
+
+def preset_stub_doc_id(name_clean: str) -> str:
+    slug = re.sub(r'[^a-z0-9]+', '-', name_clean.lower()).strip('-')[:60]
+    digest = hashlib.sha1(name_clean.lower().encode('utf-8')).hexdigest()[:8]
+    return f"auto-{slug}-{digest}" if slug else f"auto-{digest}"
 
 JWT_SECRET_KEY = os.environ.get('JWT_SECRET_KEY')
 
@@ -418,9 +427,18 @@ def update_user_preset():
     creator_id = preset_data.get('creator_id')
     
     # 2. Check permissions: owner can edit, admins can edit, or anyone can track a download
-    is_download_update = ('flags' in data or 'presetName' in data) and len(data) <= 3 and 'tags' not in data
+    # Explicit intent from the caller; the shape heuristic below stays only for
+    # backwards-compatible permission checks against older frontend builds.
+    is_explicit_download = bool(data.get('is_download') or data.get('track_download'))
+    is_download_shaped = (
+        ('flags' in data or 'presetName' in data)
+        and len(data) <= 3
+        and 'tags' not in data
+    )
+    is_download_update = is_explicit_download or is_download_shaped
+    is_owner_or_admin = (creator_id == discord_id) or is_admin
     
-    if creator_id == discord_id or is_admin or is_download_update:
+    if is_owner_or_admin or is_download_update:
         update_data = {}
         
         if tags is not None and (is_admin or creator_id == discord_id):
@@ -434,16 +452,20 @@ def update_user_preset():
         if description is not None and (creator_id == discord_id or is_admin):
             update_data['description'] = description.strip()
             
-        # Record/Update the download timestamp
-        update_data['download_timestamp'] = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+        # Record/Update the download timestamp only on download updates
         if is_download_update:
+            update_data['download_timestamp'] = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+        # Only count a download when the caller explicitly indicates so or is not the owner/admin performing an edit
+        should_increment = is_explicit_download or (is_download_shaped and not is_owner_or_admin)
+        if should_increment:
             update_data['downloads'] = firestore.Increment(1)
             update_data['download_count'] = firestore.Increment(1)
         
         doc_ref.update(update_data)
         
         response_data = {**preset_data, **update_data}
-        if is_download_update:
+        if should_increment:
             prev_dl = preset_data.get('downloads') or preset_data.get('download_count') or 0
             response_data['downloads'] = prev_dl + 1
             response_data['download_count'] = prev_dl + 1
@@ -468,12 +490,17 @@ def track_preset_download():
     data = request.get_json(silent=True) or {}
     preset_id = data.get('id')
     name = data.get('preset_name') or data.get('name') or data.get('presetName')
-    flags = data.get('flags') or ''
 
     if not preset_id and not name:
         return jsonify({
             "error": "Bad Request",
             "details": "Must provide 'id' or 'name'/'presetName' to identify preset"
+        }), 400
+
+    if name and len(str(name).strip()) > MAX_PRESET_NAME_LEN:
+        return jsonify({
+            "error": "Bad Request",
+            "details": f"'name' exceeds {MAX_PRESET_NAME_LEN} characters"
         }), 400
 
     db = get_db()
@@ -495,9 +522,14 @@ def track_preset_download():
             presets_ref.where(
                 filter=FieldFilter('preset_name_lower', '==', name_clean.lower())
             )
-            .limit(1)
+            .limit(2)
             .stream()
         )
+        if len(docs) > 1:
+            logger.warning(
+                f"[PRESETS] Ambiguous download tracking for name '{name_clean}': "
+                f"{len(docs)}+ presets share this name. Counting against {docs[0].id}."
+            )
         if docs:
             doc_ref = docs[0].reference
             existing_data = docs[0].to_dict()
@@ -506,9 +538,14 @@ def track_preset_download():
                 presets_ref.where(
                     filter=FieldFilter('preset_name', '==', name_clean)
                 )
-                .limit(1)
+                .limit(2)
                 .stream()
             )
+            if len(docs) > 1:
+                logger.warning(
+                    f"[PRESETS] Ambiguous download tracking for exact name '{name_clean}': "
+                    f"{len(docs)}+ presets share this name. Counting against {docs[0].id}."
+                )
             if docs:
                 doc_ref = docs[0].reference
                 existing_data = docs[0].to_dict()
@@ -531,35 +568,46 @@ def track_preset_download():
                 "download_timestamp": now_iso
             }), 200
         else:
+            # Guard against unknown id with no name provided
+            if not name or not str(name).strip():
+                return jsonify({
+                    "error": "Not Found",
+                    "details": f"Preset id '{preset_id}' not found and no name supplied"
+                }), 404
+
             name_clean = str(name).strip()
-            doc_ref = db.collection('presets').document()
+            stub_id = preset_stub_doc_id(name_clean)
+            doc_ref = db.collection('presets').document(stub_id)
             created_at = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S.%f")
             new_preset = {
-                'id': doc_ref.id,
+                'id': stub_id,
                 'name': name_clean,
                 'preset_name': name_clean,
                 'preset_name_lower': name_clean.lower(),
                 'description': '',
-                'flags': str(flags).strip() if flags else '',
+                'flags': '',  # never trust unauthenticated flags
+                'official': False,
+                'hidden': True,  # stub is hidden until claimed or verified
+                'auto_created': True,  # enables pruning
                 'creator_id': 'community',
                 'creator_name': 'Community',
                 'tags': [],
                 'created_at': created_at,
                 'download_timestamp': now_iso,
-                'downloads': 1,
-                'download_count': 1,
+                'downloads': firestore.Increment(1),
+                'download_count': firestore.Increment(1),
             }
-            doc_ref.set(new_preset)
+            doc_ref.set(new_preset, merge=True)
             return jsonify({
                 "success": True,
-                "id": doc_ref.id,
+                "id": stub_id,
                 "name": name_clean,
                 "downloads": 1,
                 "download_timestamp": now_iso
             }), 201
     except Exception as e:
         logger.exception(f"[PRESETS ERROR] Failed to record preset download: {e}")
-        return jsonify({"error": "Internal Server Error", "details": str(e)}), 500
+        return jsonify({"error": "Internal Server Error", "details": "An error occurred while recording preset download"}), 500
 
 
 @bp.route('/api/v1/tags', methods=['GET'])

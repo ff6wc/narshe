@@ -3,8 +3,13 @@
 Backfill Preset Downloads Migration Script
 
 Aggregates historical seed generations from the 'seedlist' collection in Firestore
-by 'seed_type' and updates (or initializes) the 'downloads' and 'download_count' fields
-in the 'presets' collection.
+by 'seed_type' and updates existing preset records in the 'presets' collection.
+
+Note:
+    - Only Discord-bot seed rolls carry the 'preset_' prefix (e.g. 'preset_ultros_league').
+      Seeds generated from the web app historically stored seed_type = 'ff6wc', so
+      web app preset usage is not recoverable from seedlist.
+    - This script only updates existing presets in Firestore. It never creates new documents.
 
 Usage:
     # Dry run (shows aggregated statistics without modifying Firestore):
@@ -24,12 +29,44 @@ from collections import defaultdict
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
 from google.cloud import firestore
-from google.cloud.firestore import FieldFilter
 from api_utils.collections import SEEDLIST, PRESETS
+
+PRESET_PREFIX = 'preset_'
 
 
 def get_db():
     return firestore.Client()
+
+
+def seed_type_to_preset_key(seed_type: str):
+    """
+    The Discord bot writes seed_type as f"preset_{preset_name.replace(' ', '_')}".
+    Everything else ('ff6wc', 'ruin', 'ruin_hard', ...) is a seed category, not a preset.
+    Returns the lowercased preset name, or None if this seed_type is not a preset roll.
+    """
+    cleaned = (seed_type or '').strip()
+    if not cleaned.lower().startswith(PRESET_PREFIX):
+        return None
+    raw_name = cleaned[len(PRESET_PREFIX):].replace('_', ' ').strip()
+    return raw_name.lower() or None
+
+
+def parse_ts(value):
+    """Best-effort parse of the mixed timestamp formats found in Firestore."""
+    if value is None or value == '':
+        return None
+    if isinstance(value, datetime):
+        return value if value.tzinfo else value.replace(tzinfo=timezone.utc)
+    text = str(value).strip().replace('Z', '+00:00').replace(' ', 'T', 1)
+    try:
+        parsed = datetime.fromisoformat(text)
+    except ValueError:
+        return None
+    return parsed if parsed.tzinfo else parsed.replace(tzinfo=timezone.utc)
+
+
+def to_iso(dt: datetime) -> str:
+    return dt.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
 def run_backfill(apply_changes: bool = False, batch_size: int = 450):
@@ -45,121 +82,138 @@ def run_backfill(apply_changes: bool = False, batch_size: int = 450):
     display_names = {}
 
     total_scanned = 0
+    skipped_non_preset = 0
+
     # Stream seedlist documents
     for doc in seedlist_ref.stream():
         total_scanned += 1
         data = doc.to_dict() or {}
         seed_type = data.get('seed_type')
-        if not seed_type or not isinstance(seed_type, str):
+        key = seed_type_to_preset_key(seed_type)
+        if not key:
+            skipped_non_preset += 1
             continue
 
-        seed_type_clean = seed_type.strip()
-        if not seed_type_clean:
-            continue
-
-        key = seed_type_clean.lower()
         counts[key] += 1
         if key not in display_names:
-            display_names[key] = seed_type_clean
+            display_names[key] = key
 
-        timestamp = data.get('timestamp')
-        if timestamp:
+        parsed_ts = parse_ts(data.get('timestamp'))
+        if parsed_ts:
             current_latest = latest_timestamps.get(key)
-            if not current_latest or str(timestamp) > str(current_latest):
-                latest_timestamps[key] = str(timestamp)
+            if not current_latest or parsed_ts > current_latest:
+                latest_timestamps[key] = parsed_ts
 
         if total_scanned % 1000 == 0:
-            print(f"    ...scanned {total_scanned} seedlist records so far")
+            print(f"    ...scanned {total_scanned} seedlist records ({skipped_non_preset} non-preset skipped)")
 
-    print(f"[+] Scan complete: {total_scanned} total seeds scanned across {len(counts)} distinct preset types.")
+    print(f"[+] Scan complete: {total_scanned} total seeds scanned.")
+    print(f"    - Preset rolls matched: {sum(counts.values())} across {len(counts)} distinct presets.")
+    print(f"    - Non-preset rolls skipped: {skipped_non_preset}")
 
     if not counts:
-        print("[!] No seedlist entries found. Exiting.")
+        print("[!] No preset seedlist entries found. Exiting.")
         return
 
     # Print summary table
-    print("\n" + "=" * 60)
+    print("\n" + "=" * 65)
     print(f"{'Preset Name':<35} | {'Downloads':<10} | {'Latest Download'}")
-    print("-" * 60)
+    print("-" * 65)
     sorted_presets = sorted(counts.items(), key=lambda x: x[1], reverse=True)
     for key, count in sorted_presets:
-        latest = latest_timestamps.get(key, "N/A")
+        latest_dt = latest_timestamps.get(key)
+        latest_str = to_iso(latest_dt) if latest_dt else "N/A"
         name = display_names.get(key, key)
-        print(f"{name:<35} | {count:<10} | {latest}")
-    print("=" * 60 + "\n")
+        print(f"{name:<35} | {count:<10} | {latest_str}")
+    print("=" * 65 + "\n")
 
-    if not apply_changes:
-        print("[*] DRY RUN finished. Run with '--apply' to persist counts into the 'presets' collection.")
-        return
-
-    print("[*] Applying aggregated counts to 'presets' collection in Firestore...")
-
-    # Load existing presets into lookup map
+    # Load existing presets into lookup map and detect collisions
+    print("[*] Loading existing presets from Firestore...")
     existing_preset_docs = {}
+    ambiguous_keys = set()
+
     for pdoc in presets_ref.stream():
         pdata = pdoc.to_dict() or {}
         pname = pdata.get('preset_name_lower') or pdata.get('name') or pdata.get('preset_name') or ''
         if pname:
-            existing_preset_docs[str(pname).strip().lower()] = (pdoc.reference, pdata)
+            pkey = str(pname).strip().lower()
+            if pkey in existing_preset_docs:
+                ambiguous_keys.add(pkey)
+            else:
+                existing_preset_docs[pkey] = (pdoc.reference, pdata)
+
+    print(f"[+] Loaded {len(existing_preset_docs)} existing presets ({len(ambiguous_keys)} ambiguous names detected).")
+
+    if not apply_changes:
+        print("[*] DRY RUN finished. Run with '--apply' to persist counts into existing preset documents.")
+        return
+
+    print("[*] Applying aggregated counts to 'presets' collection in Firestore...")
 
     batch = db.batch()
     operations_in_batch = 0
     total_updated = 0
-    total_created = 0
+    unmatched = []
+    skipped_ambiguous = []
 
     now_iso = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
-    created_at = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S.%f")
 
     for key, count in sorted_presets:
-        name = display_names.get(key, key)
-        latest_ts = latest_timestamps.get(key, now_iso)
+        if key in ambiguous_keys:
+            skipped_ambiguous.append((key, count))
+            print(f"[!] Skipping ambiguous preset '{key}' (multiple Firestore presets share this name)")
+            continue
 
-        if key in existing_preset_docs:
-            doc_ref, pdata = existing_preset_docs[key]
-            # Use max of existing downloads and backfilled seedlist count
-            existing_dl = pdata.get('downloads') or pdata.get('download_count') or 0
-            final_count = max(existing_dl, count)
-            existing_ts = pdata.get('download_timestamp') or ''
-            final_ts = max(existing_ts, latest_ts) if existing_ts else latest_ts
+        if key not in existing_preset_docs:
+            unmatched.append((key, count))
+            continue
 
-            batch.set(doc_ref, {
-                'downloads': final_count,
-                'download_count': final_count,
-                'download_timestamp': final_ts
-            }, merge=True)
-            total_updated += 1
-        else:
-            doc_ref = presets_ref.document()
-            new_preset = {
-                'id': doc_ref.id,
-                'name': name,
-                'preset_name': name,
-                'preset_name_lower': key,
-                'description': '',
-                'flags': '',
-                'creator_id': 'community',
-                'creator_name': 'Community',
-                'tags': [],
-                'created_at': created_at,
-                'download_timestamp': latest_ts,
-                'downloads': count,
-                'download_count': count,
-            }
-            batch.set(doc_ref, new_preset)
-            total_created += 1
+        doc_ref, pdata = existing_preset_docs[key]
+        existing_dl = pdata.get('downloads') or pdata.get('download_count') or 0
+        final_count = max(existing_dl, count)
 
+        existing_ts = parse_ts(pdata.get('download_timestamp'))
+        latest_dt = latest_timestamps.get(key)
+        dt_candidates = [d for d in (existing_ts, latest_dt) if d is not None]
+        final_ts = to_iso(max(dt_candidates)) if dt_candidates else now_iso
+
+        batch.set(doc_ref, {
+            'downloads': final_count,
+            'download_count': final_count,
+            'download_timestamp': final_ts,
+        }, merge=True)
+        total_updated += 1
         operations_in_batch += 1
+
         if operations_in_batch >= batch_size:
-            batch.commit()
-            print(f"    ...committed batch of {operations_in_batch} preset records")
+            try:
+                batch.commit()
+                print(f"    ...committed batch of {operations_in_batch} preset records")
+            except Exception as e:
+                print(f"[!] Failed to commit batch: {e}")
+                raise
             batch = db.batch()
             operations_in_batch = 0
 
     if operations_in_batch > 0:
-        batch.commit()
-        print(f"    ...committed final batch of {operations_in_batch} preset records")
+        try:
+            batch.commit()
+            print(f"    ...committed final batch of {operations_in_batch} preset records")
+        except Exception as e:
+            print(f"[!] Failed to commit final batch: {e}")
+            raise
 
-    print(f"[+] Successfully backfilled preset downloads! Updated: {total_updated}, Created: {total_created}.")
+    print(f"\n[+] Successfully backfilled preset downloads! Updated: {total_updated} presets.")
+
+    if unmatched:
+        print(f"\n[?] {len(unmatched)} preset names in seedlist were not found in the presets collection:")
+        for u_name, u_count in unmatched:
+            print(f"    - '{u_name}': {u_count} rolls")
+
+    if skipped_ambiguous:
+        print(f"\n[!] {len(skipped_ambiguous)} preset names were skipped due to name collisions in presets collection:")
+        for a_name, a_count in skipped_ambiguous:
+            print(f"    - '{a_name}': {a_count} rolls")
 
 
 if __name__ == '__main__':
