@@ -144,30 +144,47 @@ def run_backfill(apply_changes: bool = False, batch_size: int = 450):
 
     print(f"[+] Loaded {len(existing_preset_docs)} existing presets ({len(ambiguous_keys)} ambiguous names detected).")
 
-    if not apply_changes:
-        print("[*] DRY RUN finished. Run with '--apply' to persist counts into existing preset documents.")
-        return
-
-    print("[*] Applying aggregated counts to 'presets' collection in Firestore...")
-
-    batch = db.batch()
-    operations_in_batch = 0
-    total_updated = 0
+    # Classify presets into matched, unmatched, and ambiguous
+    matched_presets = []
     unmatched = []
     skipped_ambiguous = []
-
-    now_iso = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
     for key, count in sorted_presets:
         if key in ambiguous_keys:
             skipped_ambiguous.append((key, count))
-            print(f"[!] Skipping ambiguous preset '{key}' (multiple Firestore presets share this name)")
-            continue
-
-        if key not in existing_preset_docs:
+        elif key not in existing_preset_docs:
             unmatched.append((key, count))
-            continue
+        else:
+            matched_presets.append((key, count))
 
+    print(f"\n[+] Preset Match Classification:")
+    print(f"    - Matched presets (will update): {len(matched_presets)}")
+    print(f"    - Unmatched presets (not in Firestore): {len(unmatched)}")
+    print(f"    - Ambiguous presets (name collisions): {len(skipped_ambiguous)}")
+
+    if unmatched:
+        print(f"\n[?] {len(unmatched)} preset names in seedlist were not found in the presets collection:")
+        for u_name, u_count in unmatched:
+            print(f"    - '{u_name}': {u_count} rolls")
+
+    if skipped_ambiguous:
+        print(f"\n[!] {len(skipped_ambiguous)} preset names were skipped due to name collisions in presets collection:")
+        for a_name, a_count in skipped_ambiguous:
+            print(f"    - '{a_name}': {a_count} rolls")
+
+    if not apply_changes:
+        print("\n[*] DRY RUN finished. Run with '--apply' to persist counts into existing preset documents.")
+        return
+
+    print("\n[*] Applying aggregated counts to 'presets' collection in Firestore...")
+
+    batch = db.batch()
+    operations_in_batch = 0
+    total_updated = 0
+
+    now_iso = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+    for key, count in matched_presets:
         doc_ref, pdata = existing_preset_docs[key]
         existing_dl = pdata.get('downloads') or pdata.get('download_count') or 0
         final_count = max(existing_dl, count)
@@ -204,16 +221,6 @@ def run_backfill(apply_changes: bool = False, batch_size: int = 450):
             raise
 
     print(f"\n[+] Successfully backfilled preset downloads! Updated: {total_updated} presets.")
-
-    if unmatched:
-        print(f"\n[?] {len(unmatched)} preset names in seedlist were not found in the presets collection:")
-        for u_name, u_count in unmatched:
-            print(f"    - '{u_name}': {u_count} rolls")
-
-    if skipped_ambiguous:
-        print(f"\n[!] {len(skipped_ambiguous)} preset names were skipped due to name collisions in presets collection:")
-        for a_name, a_count in skipped_ambiguous:
-            print(f"    - '{a_name}': {a_count} rolls")
 
 
 if __name__ == '__main__':
