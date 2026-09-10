@@ -228,7 +228,9 @@ def create_user_preset():
             'gen_count': gen_count,
             'hidden': hidden,
             'validation_error': validation_error,
-            'validation_status': validation_status
+            'validation_status': validation_status,
+            'downloads': 0,
+            'download_count': 0
         }
         
         doc_ref.set(payload_data)
@@ -434,14 +436,130 @@ def update_user_preset():
             
         # Record/Update the download timestamp
         update_data['download_timestamp'] = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+        if is_download_update:
+            update_data['downloads'] = firestore.Increment(1)
+            update_data['download_count'] = firestore.Increment(1)
         
         doc_ref.update(update_data)
         
         response_data = {**preset_data, **update_data}
+        if is_download_update:
+            prev_dl = preset_data.get('downloads') or preset_data.get('download_count') or 0
+            response_data['downloads'] = prev_dl + 1
+            response_data['download_count'] = prev_dl + 1
         return jsonify(response_data), 200
     else:
         logger.warning(f"[PRESETS SECURITY WARNING] User {discord_id} attempted unauthorized update of preset {preset_id or name}")
         return jsonify({"error": "Forbidden", "details": "You are not authorized to update this preset"}), 403
+
+
+
+@bp.route('/presets/download', methods=['POST'])
+@bp.route('/api/v1/presets/download', methods=['POST'])
+@bp.route('/user-presets/download', methods=['POST'])
+@bp.route('/api/v1/user-presets/download', methods=['POST'])
+def track_preset_download():
+    """
+    Public endpoint to track seed generation / preset downloads.
+    Atomically increments the download counter and updates the download timestamp.
+    If the preset does not yet exist in Firestore (e.g. an official / community API preset),
+    creates the document stub with downloads = 1.
+    """
+    data = request.get_json(silent=True) or {}
+    preset_id = data.get('id')
+    name = data.get('preset_name') or data.get('name') or data.get('presetName')
+    flags = data.get('flags') or ''
+
+    if not preset_id and not name:
+        return jsonify({
+            "error": "Bad Request",
+            "details": "Must provide 'id' or 'name'/'presetName' to identify preset"
+        }), 400
+
+    db = get_db()
+    doc_ref = None
+    existing_data = {}
+
+    if preset_id:
+        doc_ref = db.collection('presets').document(str(preset_id))
+        doc_snap = doc_ref.get()
+        if doc_snap.exists:
+            existing_data = doc_snap.to_dict()
+        else:
+            doc_ref = None
+
+    if not doc_ref and name:
+        name_clean = str(name).strip()
+        presets_ref = db.collection('presets')
+        docs = list(
+            presets_ref.where(
+                filter=FieldFilter('preset_name_lower', '==', name_clean.lower())
+            )
+            .limit(1)
+            .stream()
+        )
+        if docs:
+            doc_ref = docs[0].reference
+            existing_data = docs[0].to_dict()
+        else:
+            docs = list(
+                presets_ref.where(
+                    filter=FieldFilter('preset_name', '==', name_clean)
+                )
+                .limit(1)
+                .stream()
+            )
+            if docs:
+                doc_ref = docs[0].reference
+                existing_data = docs[0].to_dict()
+
+    now_iso = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+    try:
+        if doc_ref:
+            doc_ref.set({
+                'downloads': firestore.Increment(1),
+                'download_count': firestore.Increment(1),
+                'download_timestamp': now_iso,
+            }, merge=True)
+            prev_downloads = existing_data.get('downloads') or existing_data.get('download_count') or 0
+            return jsonify({
+                "success": True,
+                "id": doc_ref.id,
+                "name": existing_data.get('name') or existing_data.get('preset_name') or name,
+                "downloads": prev_downloads + 1,
+                "download_timestamp": now_iso
+            }), 200
+        else:
+            name_clean = str(name).strip()
+            doc_ref = db.collection('presets').document()
+            created_at = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S.%f")
+            new_preset = {
+                'id': doc_ref.id,
+                'name': name_clean,
+                'preset_name': name_clean,
+                'preset_name_lower': name_clean.lower(),
+                'description': '',
+                'flags': str(flags).strip() if flags else '',
+                'creator_id': 'community',
+                'creator_name': 'Community',
+                'tags': [],
+                'created_at': created_at,
+                'download_timestamp': now_iso,
+                'downloads': 1,
+                'download_count': 1,
+            }
+            doc_ref.set(new_preset)
+            return jsonify({
+                "success": True,
+                "id": doc_ref.id,
+                "name": name_clean,
+                "downloads": 1,
+                "download_timestamp": now_iso
+            }), 201
+    except Exception as e:
+        logger.exception(f"[PRESETS ERROR] Failed to record preset download: {e}")
+        return jsonify({"error": "Internal Server Error", "details": str(e)}), 500
 
 
 @bp.route('/api/v1/tags', methods=['GET'])
