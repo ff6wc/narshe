@@ -4,8 +4,10 @@ from dotenv import load_dotenv
 # read in the env variables first, before importing local blueprints that load env at module-level
 load_dotenv('.env')
 
-from flask import Flask, make_response
+from flask import Flask, make_response, g
 from flask_cors import CORS
+from api_utils.logging_config import configure_logging, get_request_id
+configure_logging()
 import requests
 import api.metadata
 import api.generate
@@ -24,7 +26,16 @@ CORS(application, origins=[
     "https://ff6worldscollide.com", "https://dev.ff6worldscollide.com",
     re.compile(r"^https://.*\.pages\.dev$"),
     "http://localhost:3000", "http://localhost:8000"
-])
+], expose_headers=["X-Request-ID"])
+
+@application.before_request
+def set_request_id():
+    g.request_id = get_request_id()
+
+@application.after_request
+def add_request_id_header(response):
+    response.headers["X-Request-ID"] = g.get("request_id", "")
+    return response
 
 @application.route("/", methods=["GET"])
 def hello_world():
