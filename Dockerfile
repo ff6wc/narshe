@@ -24,6 +24,8 @@ COPY . ./
 # Install git and xdelta3, clear the empty submodule placeholder, and force-clone the engine
 RUN apt-get update && apt-get install -y git xdelta3
 RUN rm -rf WorldsCollide && git clone https://github.com/ff6wc/WorldsCollide.git WorldsCollide
+# Record the cloned commit; served by /api/wc and logged with each seed
+RUN git -C WorldsCollide rev-parse HEAD > WorldsCollide/.wc_commit
 
 ENV PATH="/opt/venv/bin:$PATH"
 
