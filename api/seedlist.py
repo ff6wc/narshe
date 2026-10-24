@@ -98,6 +98,7 @@ def create_seed_entry():
         
     share_url = data.get('share_url')
     server_name = data.get('server_name')
+    source = data.get('source')
     
     server_id = data.get('server_id')
     if server_id is not None:
@@ -148,6 +149,7 @@ def create_seed_entry():
             'seed_type': seed_type.strip(),
             'share_url': share_url.strip() if isinstance(share_url, str) else share_url,
             'server_name': server_name.strip() if isinstance(server_name, str) else server_name,
+            'source': source.strip() if isinstance(source, str) else source,
             'server_id': server_id,
             'channel_name': channel_name.strip() if isinstance(channel_name, str) else channel_name,
             'channel_id': channel_id,

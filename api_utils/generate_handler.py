@@ -2,16 +2,18 @@ from api_utils.get_seed_payload import get_seed_payload
 
 from api_utils.get_seed_url import get_seed_url
 from api_utils.create_seed import create_seed
+from api_utils.logging_config import get_wc_commit
 
 import json
 import os
 import shutil
 import subprocess
-import sys 
+import sys
 import tempfile
+import time
 import urllib.request
 import logging
-from flask import Response
+from flask import Response, g
 
 logger = logging.getLogger(__name__)
 
@@ -136,21 +138,41 @@ class GenerateHandler():
         description = data.get('description')
         flags = original_flags +  f' -url {website_url} -manifest {manifest_filename}'
         
+        started = time.monotonic()
         result_code, stdout_str, stderr_str = self._run_worlds_collide(in_filename, out_filename, manifest_filename, flags)
+        duration_s = round(time.monotonic() - started, 2)
 
         if result_code != 0:
-          logger.error(f"WorldsCollide failed. Flags: {original_flags}")
+          error_summary = self._error_summary(stderr_str)
+          # One entry with everything needed to triage, searchable by request_id
+          logger.error(f"WorldsCollide failed: {error_summary or 'exit code ' + str(result_code)}", extra={
+            'flags': original_flags,
+            'return_code': result_code,
+            'duration_s': duration_s,
+            'stdout': stdout_str[-2000:],
+            'stderr': stderr_str,
+            'error_summary': error_summary,
+            'wc_commit': get_wc_commit(),
+            'source': protocol,
+          })
           return Response (
             response = json.dumps({
               'errors': ['Seed generation failed. See server logs for details.'],
               'success': False,
               'stderr': self._sanitize_stderr(stderr_str),
-              'flags': original_flags
+              'flags': original_flags,
+              'request_id': g.get('request_id'),
             }).encode(),
             status = 400,
             mimetype='application/json',
           )
         else:
+          logger.info("Seed generated", extra={
+            'flags': original_flags,
+            'duration_s': duration_s,
+            'wc_commit': get_wc_commit(),
+            'source': protocol,
+          })
           wc_filename = out_filename
           #if os.getenv("NEXT_PUBLIC_ENABLE_BETA") == "true":
           #  wc_filename = dir + f"/{base_filename}-beta.smc"
@@ -235,11 +257,12 @@ class GenerateHandler():
         logger.error(f"Failed to extract payload for logging: {log_err}")
         
       logger.exception("Seed generation pipeline encountered an unhandled exception.")
-      
+
       return Response (
         response = json.dumps({
           'errors': ['Seed generation failed. See server logs for details.'],
-          'success': False
+          'success': False,
+          'request_id': g.get('request_id'),
         }).encode(),
         status = 500,
         mimetype='application/json',
@@ -275,17 +298,21 @@ class GenerateHandler():
     proc = subprocess.Popen(args, cwd=cwd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
     stdout, stderr = proc.communicate()
 
-    if proc.returncode != 0:
-      logger.error(f"WorldsCollide failed with return code {proc.returncode}")
-      logger.error(f"STDOUT: {stdout.decode('utf-8', errors='replace')}")
-      logger.error(f"STDERR: {stderr.decode('utf-8', errors='replace')}")
-
+    # failures are logged by do_POST as one structured entry
     return proc.returncode, stdout.decode('utf-8', errors='replace'), stderr.decode('utf-8', errors='replace')
+
+  def _error_summary(self, stderr):
+    # The last line of a Python traceback names the exception, e.g.
+    # "TypeError: 'NoneType' object cannot be interpreted as an integer"
+    if not stderr or "Traceback (most recent call last):" not in stderr:
+      return None
+    lines = [line.strip() for line in stderr.strip().splitlines() if line.strip()]
+    return lines[-1][:300] if lines else None
 
   def _sanitize_stderr(self, stderr):
     if not stderr:
       return ""
-    
+
     sanitized_lines = []
     for line in stderr.splitlines():
       line_lower = line.lower()
@@ -299,5 +326,10 @@ class GenerateHandler():
     
     if sanitized_lines:
       return "\n".join(sanitized_lines)
-    
+
+    # Not a flag error: show which exception the randomizer hit (no traceback)
+    error_summary = self._error_summary(stderr)
+    if error_summary:
+      return f"Randomizer error: {error_summary}"
+
     return "Seed generation failed due to an error in flag processing."

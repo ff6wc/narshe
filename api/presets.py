@@ -1,4 +1,6 @@
 import os
+import re
+import hashlib
 import logging
 from datetime import datetime, timezone
 import jwt
@@ -10,6 +12,13 @@ from google.cloud.firestore import FieldFilter
 logger = logging.getLogger(__name__)
 
 bp = Blueprint('presets', __name__)
+
+MAX_PRESET_NAME_LEN = 120
+
+def preset_stub_doc_id(name_clean: str) -> str:
+    slug = re.sub(r'[^a-z0-9]+', '-', name_clean.lower()).strip('-')[:60]
+    digest = hashlib.sha256(name_clean.lower().encode('utf-8')).hexdigest()[:8]
+    return f"auto-{slug}-{digest}" if slug else f"auto-{digest}"
 
 JWT_SECRET_KEY = os.environ.get('JWT_SECRET_KEY')
 
@@ -228,7 +237,9 @@ def create_user_preset():
             'gen_count': gen_count,
             'hidden': hidden,
             'validation_error': validation_error,
-            'validation_status': validation_status
+            'validation_status': validation_status,
+            'downloads': 0,
+            'download_count': 0
         }
         
         doc_ref.set(payload_data)
@@ -307,141 +318,312 @@ def update_user_preset():
     if not isinstance(data, dict):
         return jsonify({"error": "Bad Request", "details": "Request body must be a JSON object"}), 400
         
-    preset_id = data.get('id')
-    name = data.get('name') or data.get('presetName')
-    flags = data.get('flags')
-    tags = data.get('tags')
-    description = data.get('description')
-    
-    db = get_db()
-    doc_ref = None
-    
-    # 1. Locate the document by ID or falls back to name search
-    if preset_id:
-        if not isinstance(preset_id, str):
-            return jsonify({"error": "Bad Request", "details": "Parameter 'id' must be a string"}), 400
-        doc_ref = db.collection('presets').document(preset_id)
-        doc = doc_ref.get()
-        if not doc.exists:
-            # Fallback: Check if preset_id is actually a preset name or name string
-            presets_ref = db.collection('presets')
-            docs = []
-            for field in ['preset_name_lower', 'name', 'preset_name']:
-                val = preset_id.strip().lower() if field == 'preset_name_lower' else preset_id.strip()
-                docs = list(presets_ref.where(field, '==', val).limit(1).stream())
-                if docs:
-                    break
+    try:
+        preset_id = data.get('id')
+        name = data.get('name') or data.get('presetName')
+        flags = data.get('flags')
+        tags = data.get('tags')
+        description = data.get('description')
+        
+        db = get_db()
+        doc_ref = None
+        
+        # 1. Locate the document by ID or falls back to name search
+        if preset_id:
+            if not isinstance(preset_id, str) or ('/' in str(preset_id) or str(preset_id).strip() in ('', '.', '..')):
+                return jsonify({"error": "Bad Request", "details": "Parameter 'id' must be a valid preset identifier string"}), 400
+            doc_ref = db.collection('presets').document(preset_id)
+            doc = doc_ref.get()
+            if not doc.exists:
+                # Fallback: Check if preset_id is actually a preset name or name string
+                presets_ref = db.collection('presets')
+                docs = []
+                for field in ['preset_name_lower', 'name', 'preset_name']:
+                    val = preset_id.strip().lower() if field == 'preset_name_lower' else preset_id.strip()
+                    docs = list(presets_ref.where(field, '==', val).limit(1).stream())
+                    if docs:
+                        break
+                    
+                if not docs:
+                    return jsonify({"error": "Not Found", "details": f"Preset with id/name '{preset_id}' not found"}), 404
                 
-            if not docs:
-                return jsonify({"error": "Not Found", "details": f"Preset with id/name '{preset_id}' not found"}), 404
-            
-            doc_ref = docs[0].reference
-            preset_data = docs[0].to_dict()
-        else:
-            preset_data = doc.to_dict()
-    elif name:
-        if not isinstance(name, str):
-            return jsonify({"error": "Bad Request", "details": "Parameter 'name' or 'presetName' must be a string"}), 400
-        if description is not None and not isinstance(description, str):
-            return jsonify({"error": "Bad Request", "details": "Parameter 'description' must be a string"}), 400
-        if flags is not None and not isinstance(flags, str):
-            return jsonify({"error": "Bad Request", "details": "Parameter 'flags' must be a string"}), 400
-        if tags is not None and not isinstance(tags, list):
-            return jsonify({"error": "Bad Request", "details": "Parameter 'tags' must be a list"}), 400
+                doc_ref = docs[0].reference
+                preset_data = docs[0].to_dict()
+            else:
+                preset_data = doc.to_dict()
+        elif name:
+            if not isinstance(name, str):
+                return jsonify({"error": "Bad Request", "details": "Parameter 'name' or 'presetName' must be a string"}), 400
+            if description is not None and not isinstance(description, str):
+                return jsonify({"error": "Bad Request", "details": "Parameter 'description' must be a string"}), 400
+            if flags is not None and not isinstance(flags, str):
+                return jsonify({"error": "Bad Request", "details": "Parameter 'flags' must be a string"}), 400
+            if tags is not None and not isinstance(tags, list):
+                return jsonify({"error": "Bad Request", "details": "Parameter 'tags' must be a list"}), 400
 
-        presets_ref = db.collection('presets')
-        # Search by name. If not admin, restrict search to the user's own presets
-        if is_admin:
-            query = (
-                presets_ref.where(
-                    filter=FieldFilter('preset_name_lower', '==', name.strip().lower())
+            presets_ref = db.collection('presets')
+            # Search by name. If not admin, restrict search to the user's own presets
+            if is_admin:
+                query = (
+                    presets_ref.where(
+                        filter=FieldFilter('preset_name_lower', '==', name.strip().lower())
+                    )
+                    .limit(1)
+                    .stream()
                 )
-                .limit(1)
-                .stream()
-            )
-        else:
-            query = (
-                presets_ref.where(
-                    filter=FieldFilter('preset_name_lower', '==', name.strip().lower())
+            else:
+                query = (
+                    presets_ref.where(
+                        filter=FieldFilter('preset_name_lower', '==', name.strip().lower())
+                    )
+                    .where(filter=FieldFilter('creator_id', '==', discord_id))
+                    .limit(1)
+                    .stream()
                 )
-                .where(filter=FieldFilter('creator_id', '==', discord_id))
-                .limit(1)
-                .stream()
-            )
-        docs = list(query)
+            docs = list(query)
 
-        if not docs:
-            # Fallback search for public download tracking (updating download_timestamp of official or shared presets)
-            query_all = (
-                presets_ref.where(
-                    filter=FieldFilter('preset_name_lower', '==', name.strip().lower())
-                )
-                .limit(1)
-                .stream()
-            )
-            docs = list(query_all)
             if not docs:
-                if is_admin:
-                    doc_ref = db.collection('presets').document()
-                    created_at = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S.%f")
-                    download_timestamp = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
-                    is_official = 'official' in tags if tags is not None else False
-                    preset_data = {
-                        'id': doc_ref.id,
-                        'name': name.strip(),
-                        'preset_name': name.strip(),
-                        'preset_name_lower': name.strip().lower(),
-                        'description': description.strip() if description else '',
-                        'flags': flags.strip() if flags else '',
-                        'official': is_official,
-                        'creator_id': 'override',
-                        'creator_name': 'override',
-                        'tags': tags if tags is not None else [],
-                        'created_at': created_at,
-                        'download_timestamp': download_timestamp
-                    }
-                    doc_ref.set(preset_data)
-                    return jsonify(preset_data), 200
+                # Fallback search for public download tracking (updating download_timestamp of official or shared presets)
+                query_all = (
+                    presets_ref.where(
+                        filter=FieldFilter('preset_name_lower', '==', name.strip().lower())
+                    )
+                    .limit(1)
+                    .stream()
+                )
+                docs = list(query_all)
+                if not docs:
+                    if is_admin:
+                        doc_ref = db.collection('presets').document()
+                        created_at = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S.%f")
+                        download_timestamp = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+                        is_official = 'official' in tags if tags is not None else False
+                        preset_data = {
+                            'id': doc_ref.id,
+                            'name': name.strip(),
+                            'preset_name': name.strip(),
+                            'preset_name_lower': name.strip().lower(),
+                            'description': description.strip() if description else '',
+                            'flags': flags.strip() if flags else '',
+                            'official': is_official,
+                            'creator_id': 'override',
+                            'creator_name': 'override',
+                            'tags': tags if tags is not None else [],
+                            'created_at': created_at,
+                            'download_timestamp': download_timestamp
+                        }
+                        doc_ref.set(preset_data)
+                        return jsonify(preset_data), 200
+                    else:
+                        return jsonify({"error": "Not Found", "details": f"Preset '{name}' not found"}), 404
                 else:
-                    return jsonify({"error": "Not Found", "details": f"Preset '{name}' not found"}), 404
+                    doc_ref = docs[0].reference
+                    preset_data = docs[0].to_dict()
             else:
                 doc_ref = docs[0].reference
                 preset_data = docs[0].to_dict()
         else:
-            doc_ref = docs[0].reference
-            preset_data = docs[0].to_dict()
-    else:
-        return jsonify({"error": "Bad Request", "details": "Must provide 'id' or 'name'/'presetName' to identify preset"}), 400
+            return jsonify({"error": "Bad Request", "details": "Must provide 'id' or 'name'/'presetName' to identify preset"}), 400
+            
+        creator_id = preset_data.get('creator_id')
         
-    creator_id = preset_data.get('creator_id')
-    
-    # 2. Check permissions: owner can edit, admins can edit, or anyone can track a download
-    is_download_update = ('flags' in data or 'presetName' in data) and len(data) <= 3 and 'tags' not in data
-    
-    if creator_id == discord_id or is_admin or is_download_update:
-        update_data = {}
+        # 2. Check permissions: owner can edit, admins can edit, or anyone can track a download
+        # Explicit intent from the caller; the shape heuristic below stays only for
+        # backwards-compatible permission checks against older frontend builds.
+        is_explicit_download = bool(data.get('is_download') or data.get('track_download'))
+        is_download_shaped = (
+            ('flags' in data or 'presetName' in data)
+            and len(data) <= 3
+            and 'tags' not in data
+        )
+        is_download_update = is_explicit_download or is_download_shaped
+        is_owner_or_admin = (creator_id == discord_id) or is_admin
         
-        if tags is not None and (is_admin or creator_id == discord_id):
-            update_data['tags'] = tags
-            if is_admin:
-                update_data['official'] = 'official' in tags
+        if is_owner_or_admin or is_download_update:
+            update_data = {}
+            
+            if tags is not None and (is_admin or creator_id == discord_id):
+                update_data['tags'] = tags
+                if is_admin:
+                    update_data['official'] = 'official' in tags
+                    
+            if flags is not None and (creator_id == discord_id or is_admin):
+                update_data['flags'] = flags
                 
-        if flags is not None and (creator_id == discord_id or is_admin):
-            update_data['flags'] = flags
+            if description is not None and (creator_id == discord_id or is_admin):
+                update_data['description'] = description.strip()
+                
+            # Only count a download and update timestamp when the caller explicitly indicates so or is not the owner/admin performing an edit
+            should_increment = is_explicit_download or (is_download_shaped and not is_owner_or_admin)
+            if should_increment:
+                update_data['download_timestamp'] = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+                update_data['downloads'] = firestore.Increment(1)
+                update_data['download_count'] = firestore.Increment(1)
             
-        if description is not None and (creator_id == discord_id or is_admin):
-            update_data['description'] = description.strip()
+            if not update_data:
+                return jsonify({
+                    **preset_data,
+                    "success": True,
+                    "message": "No changes applied"
+                }), 200
+
+            doc_ref.update(update_data)
             
-        # Record/Update the download timestamp
-        update_data['download_timestamp'] = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
-        
-        doc_ref.update(update_data)
-        
-        response_data = {**preset_data, **update_data}
-        return jsonify(response_data), 200
-    else:
-        logger.warning(f"[PRESETS SECURITY WARNING] User {discord_id} attempted unauthorized update of preset {preset_id or name}")
-        return jsonify({"error": "Forbidden", "details": "You are not authorized to update this preset"}), 403
+            response_data = {**preset_data, **update_data}
+            if should_increment:
+                prev_dl = preset_data.get('downloads') or preset_data.get('download_count') or 0
+                response_data['downloads'] = prev_dl + 1
+                response_data['download_count'] = prev_dl + 1
+            return jsonify(response_data), 200
+        else:
+            logger.warning(f"[PRESETS SECURITY WARNING] User {discord_id} attempted unauthorized update of preset {preset_id or name}")
+            return jsonify({"error": "Forbidden", "details": "You are not authorized to update this preset"}), 403
+    except Exception as e:
+        logger.exception(f"[PRESETS ERROR] Failed to update preset: {e}")
+        return jsonify({"error": "Internal Server Error", "details": "An error occurred while updating the preset"}), 500
+
+
+
+@bp.route('/presets/download', methods=['POST'])
+@bp.route('/api/v1/presets/download', methods=['POST'])
+@bp.route('/user-presets/download', methods=['POST'])
+@bp.route('/api/v1/user-presets/download', methods=['POST'])
+def track_preset_download():
+    """
+    Public endpoint to track seed generation / preset downloads.
+    Atomically increments the download counter and updates the download timestamp.
+    If the preset does not yet exist in Firestore (e.g. an official / community API preset),
+    creates the document stub with an atomic increment.
+    """
+    data = request.get_json(silent=True) or {}
+    preset_id = data.get('id')
+    name = data.get('preset_name') or data.get('name') or data.get('presetName')
+
+    if not preset_id and not name:
+        return jsonify({
+            "error": "Bad Request",
+            "details": "Must provide 'id' or 'name'/'presetName' to identify preset"
+        }), 400
+
+    if name and len(str(name).strip()) > MAX_PRESET_NAME_LEN:
+        return jsonify({
+            "error": "Bad Request",
+            "details": f"'name' exceeds {MAX_PRESET_NAME_LEN} characters"
+        }), 400
+
+    if preset_id and ('/' in str(preset_id) or str(preset_id).strip() in ('', '.', '..')):
+        return jsonify({
+            "error": "Bad Request",
+            "details": "'id' is not a valid preset identifier"
+        }), 400
+
+    db = get_db()
+    doc_ref = None
+    existing_data = {}
+
+    try:
+        if preset_id:
+            doc_ref = db.collection('presets').document(str(preset_id))
+            doc_snap = doc_ref.get()
+            if doc_snap.exists:
+                existing_data = doc_snap.to_dict()
+            else:
+                doc_ref = None
+
+        if not doc_ref and name:
+            name_clean = str(name).strip()
+            presets_ref = db.collection('presets')
+            docs = list(
+                presets_ref.where(
+                    filter=FieldFilter('preset_name_lower', '==', name_clean.lower())
+                )
+                .limit(2)
+                .stream()
+            )
+            if len(docs) > 1:
+                logger.warning(
+                    f"[PRESETS] Ambiguous download tracking for name '{name_clean}': "
+                    f"{len(docs)}+ presets share this name. Counting against {docs[0].id}."
+                )
+            if docs:
+                doc_ref = docs[0].reference
+                existing_data = docs[0].to_dict()
+            else:
+                docs = list(
+                    presets_ref.where(
+                        filter=FieldFilter('preset_name', '==', name_clean)
+                    )
+                    .limit(2)
+                    .stream()
+                )
+                if len(docs) > 1:
+                    logger.warning(
+                        f"[PRESETS] Ambiguous download tracking for exact name '{name_clean}': "
+                        f"{len(docs)}+ presets share this name. Counting against {docs[0].id}."
+                    )
+                if docs:
+                    doc_ref = docs[0].reference
+                    existing_data = docs[0].to_dict()
+
+        now_iso = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+        if doc_ref:
+            doc_ref.set({
+                'downloads': firestore.Increment(1),
+                'download_count': firestore.Increment(1),
+                'download_timestamp': now_iso,
+            }, merge=True)
+            prev_downloads = existing_data.get('downloads') or existing_data.get('download_count') or 0
+            return jsonify({
+                "success": True,
+                "id": doc_ref.id,
+                "name": existing_data.get('name') or existing_data.get('preset_name') or name,
+                "downloads": prev_downloads + 1,
+                "download_timestamp": now_iso
+            }), 200
+        else:
+            # Guard against unknown id with no name provided
+            if not name or not str(name).strip():
+                return jsonify({
+                    "error": "Not Found",
+                    "details": f"Preset id '{preset_id}' not found and no name supplied"
+                }), 404
+
+            name_clean = str(name).strip()
+            stub_id = preset_stub_doc_id(name_clean)
+            doc_ref = db.collection('presets').document(stub_id)
+            created_at = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S.%f")
+            new_preset = {
+                'id': stub_id,
+                'name': name_clean,
+                'preset_name': name_clean,
+                'preset_name_lower': name_clean.lower(),
+                'description': '',
+                'flags': '',  # never trust unauthenticated flags
+                'official': False,
+                'hidden': True,  # stub is hidden until claimed or verified
+                'auto_created': True,  # enables pruning
+                'creator_id': 'community',
+                'creator_name': 'Community',
+                'tags': [],
+                'created_at': created_at,
+                'download_timestamp': now_iso,
+                'downloads': firestore.Increment(1),
+                'download_count': firestore.Increment(1),
+            }
+            doc_ref.set(new_preset, merge=True)
+            stub_snap = doc_ref.get()
+            confirmed_dl = stub_snap.to_dict().get('downloads', 1) if stub_snap.exists else 1
+            return jsonify({
+                "success": True,
+                "id": stub_id,
+                "name": name_clean,
+                "downloads": confirmed_dl,
+                "download_timestamp": now_iso
+            }), 201
+    except Exception as e:
+        logger.exception(f"[PRESETS ERROR] Failed to record preset download: {e}")
+        return jsonify({"error": "Internal Server Error", "details": "An error occurred while recording preset download"}), 500
 
 
 @bp.route('/api/v1/tags', methods=['GET'])
